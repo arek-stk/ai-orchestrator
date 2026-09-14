@@ -11,6 +11,7 @@ import type { SandboxPort, SandboxRunResult } from '../sandbox/port';
 import { unavailableSandbox } from '../sandbox/port';
 import { InMemoryGitHub } from '../testing/in-memory-github';
 import { createMemoryStore } from '../testing/memory-store';
+import { runResearch } from '../intelligence/research';
 import { Orchestrator, type StepResult } from './orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -80,6 +81,22 @@ const responders: Record<string, Responder> = {
   security_output: () => ({ verdict: 'pass', summary: 'ok', findings: [], confidence: 0.9 }),
   synthesis_output: () => ({ decision: 'option-a', chosenOptionId: 'option-a', reason: 'consensus', dissent: [], evidence: [], confidence: 0.9 }),
   blocker_analysis_output: () => ({ why: 'Tests keep failing with the same error.', missingInformation: [], alternativeApproach: null, needsHuman: true, confidence: 0.7 }),
+  documentation_output: (req) => {
+    const target = field(req.messages[0]!.content, 'Title').includes('code') ? 'src/index.ts' : 'README.md';
+    return { summary: 'docs', changes: [{ path: target, action: 'update', content: '# Shop\n\nSearch products by name.\n', rationale: 'docs' }], notes: [], confidence: 0.9 };
+  },
+  release_readiness_output: (req) =>
+    field(req.messages[0]!.content, 'Title').includes('unready')
+      ? { verdict: 'not_ready', summary: 'Changelog missing', checks: [{ name: 'changelog', status: 'fail', detail: 'missing' }], blockers: ['changelog entry missing'], confidence: 0.8 }
+      : { verdict: 'ready', summary: 'Ready to ship', checks: [{ name: 'tests', status: 'pass', detail: 'passed' }], blockers: [], confidence: 0.9 },
+  research_output: () => ({
+    question: 'q',
+    findings: [{ claim: 'Postgres trigram indexes speed up ILIKE search', source: 'docs', confidence: 0.8 }],
+    recommendation: 'Use a trigram index',
+    limitations: [],
+    openQuestions: [],
+    confidence: 0.8,
+  }),
 };
 
 const model: ModelConfig = {
@@ -99,9 +116,13 @@ const model: ModelConfig = {
   enabled: true,
 };
 
+/** Last user prompt per schema, for assertions on what an agent was shown. */
+const lastPrompts: Record<string, string> = {};
+
 const provider: ModelProvider = {
   kind: 'mock',
   async generateStructured<T>(request: StructuredRequest<T>) {
+    lastPrompts[request.schemaName] = request.messages[0]!.content;
     const responder = responders[request.schemaName];
     if (!responder) throw new Error(`no responder for ${request.schemaName}`);
     return {
@@ -391,5 +412,81 @@ describe('Orchestrator pipeline', () => {
     await h.drive(run.id);
     expect((await h.store.agentRuns.list({ role: 'architect' })).length).toBe(agentRunsAfterFirst);
     expect((await h.store.runs.get(run.id))!.stageStates.DESIGN?.summary).toMatch(/Reused earlier decision/);
+  });
+});
+
+describe('Specialists in the pipeline', () => {
+  it('lets the documentation agent implement docs tasks and publishes only documentation files', async () => {
+    const h = await harness();
+    const task = await h.createTask({ title: 'Document search', goal: 'Explain product search in the README', kind: 'docs', estimatedComplexity: 'simple', risk: 'low' });
+    const run = (await h.orchestrator.startTask(task.id))!;
+
+    expect(await h.drive(run.id)).toMatchObject({ status: 'SUCCEEDED' });
+    const roles = (await h.store.agentRuns.list({ runId: run.id })).map((r) => r.role);
+    expect(roles).toContain('documentation');
+    expect(roles).not.toContain('builder');
+    const finished = (await h.store.runs.get(run.id))!;
+    expect(finished.checkpoint.changeset.map((c) => c.path)).toEqual(['README.md']);
+    const head = h.github.branch(repo, finished.checkpoint.branch!)!;
+    expect(h.github.fileAt(repo, head, 'README.md')).toContain('Search products by name.');
+  });
+
+  it('rejects documentation output that touches code', async () => {
+    const h = await harness();
+    const task = await h.createTask({ title: 'Document code comments', goal: 'Explain the index module', kind: 'docs', estimatedComplexity: 'simple', risk: 'low' });
+    const run = (await h.orchestrator.startTask(task.id))!;
+
+    expect(await h.drive(run.id)).toMatchObject({ status: 'BLOCKED' });
+    expect(h.github.pulls(repo)).toHaveLength(0);
+    expect((await h.store.agentRuns.list({ runId: run.id, role: 'documentation' }))[0]?.error).toMatch(/not a documentation file/);
+  });
+
+  it('checks release readiness before asking for the production deploy approval', async () => {
+    const h = await harness({ level: 4, profile: { deployWorkflow: 'deploy.yml' } });
+    const task = await h.createTask();
+    const run = (await h.orchestrator.startTask(task.id))!;
+
+    expect(await h.drive(run.id)).toEqual({ next: 'wait', resumeAt: null });
+    const [approval] = await h.store.approvals.list({ status: 'pending' });
+    expect(approval).toMatchObject({ action: 'production_deploy' });
+    expect(approval!.details.releaseReadiness).toMatchObject({ summary: 'Ready to ship' });
+    expect(h.store.events.log.find((e) => e.type === 'release.readiness')?.payload).toEqual({ verdict: 'ready', blockers: [] });
+    expect((await h.store.agentRuns.list({ runId: run.id, role: 'release' })).length).toBe(1);
+
+    await h.store.approvals.decide(approval!.id, 'approved', 'usr_owner', null);
+    await h.orchestrator.onApprovalDecided(approval!.id);
+    expect(await h.drive(run.id)).toMatchObject({ status: 'SUCCEEDED' });
+    // The readiness verdict is reused after the approval, not re-evaluated.
+    expect((await h.store.agentRuns.list({ runId: run.id, role: 'release' })).length).toBe(1);
+    expect(h.github.dispatched(repo)).toEqual([{ workflow: 'deploy.yml', ref: 'main' }]);
+  });
+
+  it('blocks the deployment when release readiness finds blockers', async () => {
+    const h = await harness({ level: 4, profile: { deployWorkflow: 'deploy.yml' } });
+    const task = await h.createTask({ title: 'Add search (unready)' });
+    const run = (await h.orchestrator.startTask(task.id))!;
+
+    expect(await h.drive(run.id)).toMatchObject({ status: 'BLOCKED' });
+    expect((await h.store.runs.get(run.id))!.blockedReason).toContain('changelog entry missing');
+    expect(await h.store.approvals.list({ status: 'pending' })).toHaveLength(0);
+    expect(h.github.dispatched(repo)).toEqual([]);
+  });
+
+  it('includes explicitly requested research for the task in planning, and only then', async () => {
+    const h = await harness({ level: 2 });
+    const task = await h.createTask();
+    const research = await runResearch({ ...h.store, runtime: (h.orchestrator as unknown as { deps: { runtime: AgentRuntime } }).deps.runtime }, { projectId: h.project.id, question: 'How to speed up search?', taskId: task.id });
+    expect(research).toMatchObject({ ok: true });
+    expect(h.eventTypes()).toContain('research.completed');
+
+    const run = (await h.orchestrator.startTask(task.id))!;
+    await h.drive(run.id);
+    const planPrompts = (await h.store.agentRuns.list({ runId: run.id, role: 'planner' })).length;
+    expect(planPrompts).toBe(1);
+    expect(lastPrompts.plan_output).toContain('Postgres trigram indexes');
+
+    const other = await h.createTask({ title: 'Another feature' });
+    await h.drive((await h.orchestrator.startTask(other.id))!.id);
+    expect(lastPrompts.plan_output).not.toContain('Research notes');
   });
 });

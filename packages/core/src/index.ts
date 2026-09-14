@@ -29,6 +29,8 @@ export * from './intelligence/types';
 export * from './intelligence/signals';
 export * from './intelligence/proposals';
 export * from './intelligence/scanner';
+export * from './intelligence/research';
+export * from './orchestrator/release';
 export * from './agents/definitions';
 export * from './agents/runtime';
 export * from './agents/contract';

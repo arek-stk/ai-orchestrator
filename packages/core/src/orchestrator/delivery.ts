@@ -1,4 +1,5 @@
-import { AnalysisOutputSchema, PlanOutputSchema, ReviewOutputSchema } from '../agents/schemas';
+import { AnalysisOutputSchema, PlanOutputSchema, ReleaseReadinessOutputSchema, ReviewOutputSchema } from '../agents/schemas';
+import { releaseReadiness } from './release';
 import { classifyCiFailure } from '../ci/classifier';
 import type { CheckReport, PullRequestRef } from '../github/port';
 import { redactSecrets } from '../security/secrets';
@@ -172,6 +173,10 @@ export const deployStage: StageHandler = async (ctx) => {
   if (!workflow || !cp.prNumber || !project.repo) return passed('Nothing to deploy.');
   if (cp.deployDispatchedAt) return passed('Deployment already dispatched.');
 
+  const notReady = await releaseReadiness(ctx);
+  if (notReady) return notReady;
+  const readiness = parseOutput(ReleaseReadinessOutputSchema, cp.outputs.release);
+
   try {
     await ctx.tools.invoke('deploy.run', { prNumber: cp.prNumber, workflow, ref: project.repo.defaultBranch }, orchestratorContext(ctx));
   } catch (error) {
@@ -180,6 +185,7 @@ export const deployStage: StageHandler = async (ctx) => {
         prNumber: cp.prNumber,
         prUrl: cp.prUrl,
         workflow,
+        releaseReadiness: readiness ? { summary: readiness.summary, checks: readiness.checks } : null,
       });
     }
     throw error;
