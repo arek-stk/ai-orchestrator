@@ -12,6 +12,10 @@ import { unavailableSandbox } from '../sandbox/port';
 import { InMemoryGitHub } from '../testing/in-memory-github';
 import { createMemoryStore } from '../testing/memory-store';
 import { runResearch } from '../intelligence/research';
+import type { EventRecorder } from '../ports';
+import { RoomEventProjector, withRoomProjection } from '../room/projector';
+import { RoomService } from '../room/service';
+import { createMemoryConversationStore } from '../testing/memory-conversations';
 import { Orchestrator, type StepResult } from './orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -160,7 +164,7 @@ function scriptedSandbox(results: boolean[]): SandboxPort & { calls: number } {
 
 const repo = { owner: 'acme', name: 'shop' };
 
-async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; profile?: Partial<ProjectProfile>; budgetUsd?: number } = {}) {
+async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; profile?: Partial<ProjectProfile>; budgetUsd?: number; wrapEvents?: (events: EventRecorder, store: ReturnType<typeof createMemoryStore>) => EventRecorder } = {}) {
   let time = Date.parse('2026-09-14T10:00:00Z');
   const clock = { now: () => new Date(time) };
   const store = createMemoryStore(clock);
@@ -185,6 +189,7 @@ async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; 
 
   const orchestrator = new Orchestrator({
     ...store,
+    ...(options.wrapEvents ? { events: options.wrapEvents(store.events, store) } : {}),
     clock,
     runtime,
     github,
@@ -488,5 +493,45 @@ describe('Specialists in the pipeline', () => {
     const other = await h.createTask({ title: 'Another feature' });
     await h.drive((await h.orchestrator.startTask(other.id))!.id);
     expect(lastPrompts.plan_output).not.toContain('Research notes');
+  });
+});
+
+describe('Project Room projection in the pipeline', () => {
+  it('posts bounded, deduplicated room notices for stages, decisions and the outcome of a run', async () => {
+    const conversations = createMemoryConversationStore();
+    const h = await harness({
+      wrapEvents: (events, store) => withRoomProjection(events, new RoomEventProjector({ room: new RoomService({ ...conversations, events }), tasks: store.tasks })),
+    });
+    const task = await h.createTask();
+    const run = (await h.orchestrator.startTask(task.id))!;
+    expect(await h.drive(run.id)).toEqual({ next: 'done', status: 'SUCCEEDED' });
+
+    const messages = conversations.messages.all();
+    const bodies = messages.map((m) => m.body);
+    expect(bodies[0]).toBe('Started working on “Add product search”.');
+    expect(bodies.some((b) => b.startsWith('Stage PLAN passed for “Add product search”'))).toBe(true);
+    expect(messages.find((m) => m.intent === 'decision')).toMatchObject({ authorType: 'orchestrator', refs: { runId: run.id } });
+    expect(bodies.some((b) => b.startsWith('Opened pull request #1'))).toBe(true);
+    expect(bodies.at(-1)).toMatch(/^Finished “Add product search”: pr ready/);
+    // Bounded: no stage starts, agent calls or scheduler ticks, and every notice is unique per run.
+    expect(messages.length).toBeLessThanOrEqual(14);
+    expect(new Set(bodies).size).toBe(bodies.length);
+    expect(messages.every((m) => m.projectId === h.project.id && m.refs.runId === run.id)).toBe(true);
+    // Room messages are themselves events, but never projected again.
+    expect(h.store.events.log.filter((e) => e.type === 'room.message')).toHaveLength(messages.length);
+  });
+
+  it('posts the approval request when a gated change waits for a human', async () => {
+    const conversations = createMemoryConversationStore();
+    const h = await harness({
+      wrapEvents: (events, store) => withRoomProjection(events, new RoomEventProjector({ room: new RoomService({ ...conversations, events }), tasks: store.tasks })),
+    });
+    const task = await h.createTask({ title: 'Add product index' });
+    const run = (await h.orchestrator.startTask(task.id))!;
+    expect(await h.drive(run.id)).toEqual({ next: 'wait', resumeAt: null });
+    const request = conversations.messages.all().find((m) => m.intent === 'decision_request');
+    expect(request).toMatchObject({ authorType: 'orchestrator', refs: { runId: run.id } });
+    expect(request!.refs.approvalId).toBeTruthy();
+    expect(request!.body).toMatch(/^Approval needed for “Add product index”: database migration/);
   });
 });
