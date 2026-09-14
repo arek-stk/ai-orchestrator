@@ -130,6 +130,22 @@ Format: context → decision → consequences → status.
 * **Consequences:** Every change lands through a pull request with green CI; AI output is advisory and never gates or
   merges anything.
 * **Status:** Accepted (2026-09-14)
+* **Addendum (2026-09-14) — milestones drive releases:**
+  * Roadmap milestones are named `vX.Y — <theme>`; `Backlog — proposed` is never released. When a `vX.Y` milestone
+    has no open and at least one closed item, `milestone-release.yml` targets `X.Y.0`: it squash-auto-merges the
+    release-please PR if it already has that version, otherwise it opens a bot PR with an empty `Release-As: X.Y.0`
+    commit first. Required checks and conversation resolution still gate every merge; branch protection is never
+    bypassed. After the release is published it appends the milestone link to the notes, comments on the release PR
+    and closes the milestone. Only the lowest open `vX.Y` milestone is acted on.
+  * Bot PRs get CI without a personal token: their `pull_request` runs wait for approval, so the workflow dispatches
+    `ci.yml` (`workflow_dispatch` is exempt from the GITHUB_TOKEN trigger rule) once per head commit, and dispatches
+    release-please when a bot merge left the default branch head unprocessed. A PAT or GitHub App token was rejected
+    as a standing credential with write access.
+  * Safety: decisions live in the pure, unit-tested `.github/scripts/milestone-release/logic.mjs`; only bot-authored
+    PRs from this repository are auto-merged; auto-merge enabled by a human is never withdrawn; a merged or closed
+    Release-As PR is never recreated. Pause with the repository variable `AUTO_RELEASE=false` or the `release:hold`
+    label on the release PR. PRs get a milestone only from a `milestone:vX.Y` label or a closing reference to an issue
+    in that milestone.
 
 ## ADR-020 — Production build: esbuild bundle, container image and compose stack
 * **Context:** ADR-001 bundles the server for production, but no bundle, image or deployment description existed.

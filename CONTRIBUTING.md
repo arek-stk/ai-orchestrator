@@ -39,6 +39,18 @@ npm test            # vitest, no database or Docker required (embedded PGlite, i
 * Releases are automated: release-please keeps a release PR with the next version and `CHANGELOG.md` up to date;
   merging it publishes the GitHub release.
 
+## Releases & milestones
+
+* Roadmap milestones are named `vX.Y — <theme>` (for example `v0.5 — Project Room`); unscheduled work lives in
+  `Backlog — proposed`. Put issues and PRs into the milestone they deliver; a PR without one gets it from a
+  `milestone:vX.Y` label or from `Closes #N` pointing at an issue in that milestone.
+* When the lowest open `vX.Y` milestone has no open items, the **Milestone release** workflow releases `X.Y.0`: it
+  retargets the release PR with a `Release-As` PR if needed and enables squash auto-merge. The merge still waits for
+  the required checks and resolved conversations; afterwards the milestone is closed with a link to the release.
+* You can always merge a release PR by hand. To pause the automation, add the `release:hold` label to the release PR
+  or set the repository variable `AUTO_RELEASE` to `false`; close a Release-As PR to veto it. Run the workflow
+  manually with `dry_run` to see its plan. Details: ADR-012 addendum in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
 ## Automation
 
 * **CI** runs typecheck and tests on every pull request; it is required on `main`.
