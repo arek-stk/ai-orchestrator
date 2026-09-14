@@ -1,3 +1,4 @@
+export * from './admin-repositories';
 export * from './client';
 export * from './ids';
 export * from './job-queue';
