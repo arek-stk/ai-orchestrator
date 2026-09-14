@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  errorCheck,
   escapeMarkdown,
   evaluateBranchProtection,
   evaluateCi,
@@ -23,6 +24,8 @@ import {
   safeUrl,
   skippedCheck,
   stateOf,
+  summarizeChecks,
+  trustedPreviousState,
   worstStatus,
 } from './lib.mjs';
 
@@ -68,11 +71,30 @@ describe('safeUrl', () => {
 });
 
 describe('status aggregation', () => {
-  it('uses the worst status and ignores skipped', () => {
+  it('computes the worst finding level; skipped and error do not raise it', () => {
     expect(worstStatus([])).toBe('ok');
-    expect(worstStatus(['skipped'])).toBe('ok');
+    expect(worstStatus(['skipped', 'error'])).toBe('ok');
     expect(worstStatus(['ok', 'warning', 'skipped'])).toBe('warning');
     expect(worstStatus(['critical', 'warning', 'ok'])).toBe('critical');
+  });
+
+  const ok = { id: 'ci', title: 'CI', status: 'ok', summary: 'green', findings: [] };
+
+  it('is healthy with ok and intentionally skipped checks', () => {
+    expect(summarizeChecks([ok, skippedCheck('secret-scanning', 'Secrets', 'needs token')])).toMatchObject({ healthy: true, label: 'ok' });
+  });
+
+  it('is degraded, never healthy, when a check errored', () => {
+    const mixed = summarizeChecks([ok, errorCheck('docs', 'Docs', 'HTTP 502')]);
+    expect(mixed).toMatchObject({ healthy: false, label: 'degraded', level: 'ok' });
+    expect(mixed.errors.map((c) => c.id)).toEqual(['docs']);
+    expect(summarizeChecks([errorCheck('a', 'A', 'x'), errorCheck('b', 'B', 'y')])).toMatchObject({ healthy: false, label: 'degraded' });
+    expect(summarizeChecks([{ ...ok, status: 'critical' }, errorCheck('b', 'B', 'y')])).toMatchObject({ healthy: false, label: 'critical' });
+  });
+
+  it('keeps "not checked" and "could not run" distinguishable', () => {
+    expect(skippedCheck('x', 'X', 'needs token').summary).toBe('not checked (needs token)');
+    expect(errorCheck('x', 'X', 'HTTP 403').summary).toBe('could not run (HTTP 403)');
   });
 });
 
@@ -100,14 +122,55 @@ describe('change detection', () => {
     expect(newlyCritical({ ci: 'critical' }, { ci: 'critical' })).toEqual([]);
   });
 
+  const check = (id, status) => ({ id, title: id, status, summary: status, findings: [] });
+
   it('plans create, close, reopen and comments without spam', () => {
-    const current = stateOf(checks);
-    expect(planIssueUpdate({ exists: false, open: false, overall: 'ok', previous: {}, current: { ci: 'ok' } })).toMatchObject({ create: false, update: false, comment: false });
-    expect(planIssueUpdate({ exists: false, open: false, overall: 'critical', previous: {}, current })).toMatchObject({ create: true, comment: true });
-    expect(planIssueUpdate({ exists: true, open: true, overall: 'critical', previous: current, current })).toMatchObject({ update: true, close: false, reopen: false, comment: false });
-    expect(planIssueUpdate({ exists: true, open: true, overall: 'ok', previous: current, current: { ci: 'ok' } })).toMatchObject({ close: true, comment: false });
-    expect(planIssueUpdate({ exists: true, open: false, overall: 'warning', previous: { ci: 'ok' }, current: { ci: 'warning' } })).toMatchObject({ reopen: true, comment: false });
-    expect(planIssueUpdate({ exists: true, open: false, overall: 'critical', previous: { ci: 'ok' }, current: { ci: 'critical' } })).toMatchObject({ reopen: true, comment: true, newlyCritical: ['ci'] });
+    const previous = stateOf(checks);
+    expect(planIssueUpdate({ exists: false, open: false, checks: [check('ci', 'ok')], previous: {} })).toMatchObject({ create: false, update: false, comment: false });
+    expect(planIssueUpdate({ exists: false, open: false, checks, previous: {} })).toMatchObject({ create: true, comment: true });
+    expect(planIssueUpdate({ exists: true, open: true, checks, previous })).toMatchObject({ update: true, close: false, reopen: false, comment: false });
+    expect(planIssueUpdate({ exists: true, open: true, checks: [check('ci', 'ok')], previous })).toMatchObject({ close: true, comment: false });
+    expect(planIssueUpdate({ exists: true, open: false, checks: [check('ci', 'warning')], previous: { ci: 'ok' } })).toMatchObject({ reopen: true, comment: false });
+    expect(planIssueUpdate({ exists: true, open: false, checks: [check('ci', 'critical')], previous: { ci: 'ok' } })).toMatchObject({ reopen: true, comment: true, newlyCritical: ['ci'] });
+  });
+
+  it('does not close the issue when all checks errored', () => {
+    const all = [errorCheck('ci', 'CI', 'HTTP 502'), errorCheck('docs', 'Docs', 'HTTP 502')];
+    expect(planIssueUpdate({ exists: true, open: true, checks: all, previous: { ci: 'critical', docs: 'ok' } })).toMatchObject({ close: false, comment: false });
+    expect(planIssueUpdate({ exists: true, open: false, checks: all, previous: {} })).toMatchObject({ reopen: true });
+    expect(planIssueUpdate({ exists: false, open: false, checks: all, previous: {} })).toMatchObject({ create: true, comment: false });
+  });
+
+  it('does not close the issue when ok checks are mixed with an errored one', () => {
+    const mixed = [check('ci', 'ok'), check('docs', 'ok'), errorCheck('code-scanning', 'Code scanning', 'HTTP 403')];
+    expect(planIssueUpdate({ exists: true, open: true, checks: mixed, previous: { ci: 'ok' } })).toMatchObject({ close: false, reopen: false, update: true });
+  });
+
+  it('keeps a previous critical state through an errored run and does not re-comment on recovery', () => {
+    const outage = planIssueUpdate({ exists: true, open: true, checks: [errorCheck('ci', 'CI', 'HTTP 502')], previous: { ci: 'critical' } });
+    expect(outage.state).toEqual({ ci: 'critical' });
+    expect(outage.comment).toBe(false);
+    const recovered = planIssueUpdate({ exists: true, open: true, checks: [check('ci', 'critical')], previous: outage.state });
+    expect(recovered.comment).toBe(false);
+    // With no earlier state the errored check is recorded as error, and a later critical result is announced.
+    const fresh = planIssueUpdate({ exists: true, open: true, checks: [errorCheck('ci', 'CI', 'x')], previous: {} });
+    expect(fresh.state).toEqual({ ci: 'error' });
+    expect(planIssueUpdate({ exists: true, open: true, checks: [check('ci', 'critical')], previous: fresh.state }).comment).toBe(true);
+  });
+
+  it('writes the carried-forward state into the rendered report and shows a degraded banner', () => {
+    const body = renderReport({ checks: [check('ci', 'ok'), errorCheck('docs', 'Docs consistency', 'HTTP 502')], generatedAt: NOW, previous: { docs: 'critical' } });
+    expect(parseState(body)).toEqual({ ci: 'ok', docs: 'critical' });
+    expect(body).toContain('**Overall: ❗ degraded**');
+    expect(body).toContain('Degraded — 1 check could not run:** Docs consistency');
+    expect(body).toContain('| Docs consistency | ❗ could not run | could not run \\(HTTP 502\\) |');
+  });
+
+  it('ignores the recorded state when a human edited the issue body last', () => {
+    const body = renderReport({ checks, generatedAt: NOW });
+    expect(trustedPreviousState(body, null)).toEqual(parseState(body));
+    expect(trustedPreviousState(body, 'github-actions')).toEqual(parseState(body));
+    expect(trustedPreviousState(body, 'mallory')).toEqual({});
   });
 });
 

@@ -25,15 +25,15 @@ import {
   evaluateDocs,
   evaluatePullRequests,
   evaluateSecretScanning,
+  errorCheck,
   evaluateStaleBranches,
   inProgressRows,
-  parseState,
   planIssueUpdate,
   renderCriticalComment,
   renderReport,
   skippedCheck,
-  stateOf,
-  worstStatus,
+  summarizeChecks,
+  trustedPreviousState,
 } from './lib.mjs';
 
 const MAX_PAGES = 10;
@@ -74,7 +74,7 @@ async function paginate(octokit, method, params, pick = (r) => r.data) {
 }
 
 /**
- * Runs a check and turns unexpected errors into a skipped result instead of failing the whole report.
+ * Runs a check and turns unexpected errors into an `error` result (degraded report) instead of failing the whole run.
  * @param {string} id
  * @param {string} title
  * @param {() => Promise<import('./lib.mjs').CheckResult>} fn
@@ -86,7 +86,7 @@ async function guarded(id, title, fn, core) {
   } catch (error) {
     const status = httpStatus(error);
     core.warning(`${title}: ${status ? `HTTP ${status}` : error instanceof Error ? error.message : 'error'}`);
-    return skippedCheck(id, title, status ? `API returned HTTP ${status}` : 'error while checking');
+    return errorCheck(id, title, status ? `API returned HTTP ${status}` : 'unexpected error, see workflow log');
   }
 }
 
@@ -335,15 +335,29 @@ async function ensureLabel({ github, owner, repo }) {
 /**
  * Keeps exactly one bot-authored report issue: updates it in place, closes or reopens it and comments only when a
  * check newly becomes critical.
- * @param {{ github: any, core: any, owner: string, repo: string, checks: import('./lib.mjs').CheckResult[], body: string, runUrl: string }} ctx
+ * @param {{ github: any, core: any, owner: string, repo: string, checks: import('./lib.mjs').CheckResult[],
+ *   render: (previous: Record<string, import('./lib.mjs').Status>) => string, runUrl: string }} ctx
  */
-async function publishIssue({ github, core, owner, repo, checks, body, runUrl }) {
+async function publishIssue({ github, core, owner, repo, checks, render, runUrl }) {
   await ensureLabel({ github, owner, repo });
   const candidates = (await paginate(github, github.rest.issues.listForRepo, { owner, repo, labels: ISSUE_LABEL, state: 'all', sort: 'created', direction: 'asc' }))
     .filter((issue) => !issue.pull_request && issue.title === ISSUE_TITLE && issue.user?.login === BOT_LOGIN);
   const issue = candidates.find((i) => i.state === 'open') ?? candidates[candidates.length - 1] ?? null;
-  const overall = worstStatus(checks.map((c) => c.status));
-  const plan = planIssueUpdate({ exists: Boolean(issue), open: issue?.state === 'open', overall, previous: parseState(issue?.body), current: stateOf(checks) });
+  /** @type {Record<string, import('./lib.mjs').Status>} */
+  let previous = {};
+  if (issue) {
+    try {
+      const result = await github.graphql(
+        'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { editor { login } } } }',
+        { owner, name: repo, number: issue.number },
+      );
+      previous = trustedPreviousState(issue.body, result.repository.issue?.editor?.login ?? null);
+    } catch {
+      core.warning(`Could not read the last editor of issue #${issue.number}; ignoring its recorded state`);
+    }
+  }
+  const plan = planIssueUpdate({ exists: Boolean(issue), open: issue?.state === 'open', checks, previous });
+  const body = render(previous);
 
   let number = issue?.number ?? null;
   if (plan.create) {
@@ -395,21 +409,25 @@ export default async function run({ github, context, core, getOctokit, dryRun = 
     await guarded('code-scanning', 'Code scanning alerts', () => checkCodeScanning(ctx), core),
     await guarded('dependabot-alerts', 'Dependabot alerts', () => checkDependabotAlerts(ctx), core),
     await guarded('secret-scanning', 'Secret scanning alerts', () => checkSecretScanning(ctx), core),
-    prs ? evaluatePullRequests(prs, now) : skippedCheck('pull-requests', 'Open pull requests', 'pull requests not readable'),
+    prs ? evaluatePullRequests(prs, now) : errorCheck('pull-requests', 'Open pull requests', 'pull requests could not be read'),
     await guarded('branch-protection', 'Branch protection', () => checkBranchProtection(ctx), core),
     await guarded('docs', 'Docs consistency', () => checkDocs({ ...ctx, root, sha: context.sha, prs: prs ?? [] }), core),
     await guarded('stale-branches', 'Stale branches', async () => {
       const heads = new Set((prs ?? []).map((pr) => pr.headRef));
       return evaluateStaleBranches(await fetchBranches(ctx), heads, defaultBranch, now);
     }, core),
-    prs ? evaluateDependabotPrs(prs, now) : skippedCheck('dependabot-prs', 'Dependabot pull requests', 'pull requests not readable'),
+    prs ? evaluateDependabotPrs(prs, now) : errorCheck('dependabot-prs', 'Dependabot pull requests', 'pull requests could not be read'),
   ];
 
   const ref = `${String(context.ref ?? '').replace(/^refs\/heads\//, '')}@${String(context.sha ?? '').slice(0, 7)}`;
-  const body = renderReport({ checks, generatedAt: now, runUrl, trigger: context.eventName, ref });
+  /** @param {Record<string, import('./lib.mjs').Status>} previous */
+  const render = (previous) => renderReport({ checks, generatedAt: now, runUrl, trigger: context.eventName, ref, previous });
+  const body = render({});
+  const { label, errors } = summarizeChecks(checks);
+  core.info(`Overall: ${label}${errors.length ? ` (${errors.length} checks could not run)` : ''}`);
   if (core.summary) await core.summary.addRaw(body, true).write();
   if (dryRun) return { checks, body, issue: null };
-  const issue = await publishIssue({ github, core, owner, repo, checks, body, runUrl });
+  const issue = await publishIssue({ github, core, owner, repo, checks, render, runUrl });
   return { checks, body, issue };
 }
 

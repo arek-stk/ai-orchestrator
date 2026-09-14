@@ -4,7 +4,9 @@
 // (PR titles, branch names, alert texts, file paths) is untrusted and only reaches the report through `escapeMarkdown`
 // and `safeUrl`.
 
-/** @typedef {'ok' | 'warning' | 'critical' | 'skipped'} Status */
+// `skipped` means intentionally not checked (e.g. needs an extra token); `error` means the check was supposed to run
+// but failed (API error, rate limit, revoked permission). Errors make the report degraded: never healthy.
+/** @typedef {'ok' | 'warning' | 'critical' | 'skipped' | 'error'} Status */
 /** @typedef {{ status: Status, text: string, url?: string | null }} Finding */
 /** @typedef {{ id: string, title: string, status: Status, summary: string, findings: Finding[] }} CheckResult */
 
@@ -17,9 +19,11 @@ const MAX_TEXT = 300;
 const MAX_FINDINGS_PER_CHECK = 25;
 
 /** @type {Record<Status, number>} */
-const RANK = { skipped: 0, ok: 1, warning: 2, critical: 3 };
+const RANK = { skipped: 0, error: 0, ok: 1, warning: 2, critical: 3 };
 /** @type {Record<Status, string>} */
-const ICON = { ok: '✅ ok', warning: '⚠️ warning', critical: '🔴 critical', skipped: '⏭️ not checked' };
+const ICON = { ok: '✅ ok', warning: '⚠️ warning', critical: '🔴 critical', skipped: '⏭️ not checked', error: '❗ could not run' };
+// Logins under which GitHub reports edits made with the workflow GITHUB_TOKEN (GraphQL omits the `[bot]` suffix).
+const BOT_EDITORS = new Set(['github-actions', 'github-actions[bot]']);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Escaping
@@ -73,13 +77,16 @@ export function safeUrl(value) {
 // Status aggregation and change detection
 // ---------------------------------------------------------------------------------------------------------------
 
+/** @typedef {'ok' | 'warning' | 'critical'} Level */
+
 /**
- * Worst status wins; `skipped` never raises the level. An empty list is ok.
+ * Worst finding level; `skipped` and `error` do not raise it (errors are tracked separately by `summarizeChecks`).
+ * An empty list is ok.
  * @param {Status[]} statuses
- * @returns {Exclude<Status, 'skipped'>}
+ * @returns {Level}
  */
 export function worstStatus(statuses) {
-  let worst = /** @type {Exclude<Status, 'skipped'>} */ ('ok');
+  let worst = /** @type {Level} */ ('ok');
   for (const status of statuses) {
     if (status === 'warning' && worst === 'ok') worst = 'warning';
     if (status === 'critical') worst = 'critical';
@@ -112,14 +119,55 @@ export function skippedCheck(id, title, reason) {
 }
 
 /**
+ * A check that should have run but failed.
+ * @param {string} id
+ * @param {string} title
+ * @param {string} reason
+ * @returns {CheckResult}
+ */
+export function errorCheck(id, title, reason) {
+  return { id, title, status: 'error', summary: `could not run (${reason})`, findings: [] };
+}
+
+/**
+ * Overall verdict. Healthy only when no finding is above ok AND every check that should run did run.
  * @param {CheckResult[]} checks
+ */
+export function summarizeChecks(checks) {
+  const level = worstStatus(checks.map((c) => c.status));
+  const errors = checks.filter((c) => c.status === 'error');
+  const healthy = level === 'ok' && errors.length === 0;
+  const label = level === 'ok' && errors.length > 0 ? 'degraded' : level;
+  return { level, errors, healthy, label };
+}
+
+/**
+ * Machine state recorded in the issue. A check that could not run keeps its previously recorded status, so an API
+ * outage neither clears a critical state nor causes a duplicate "newly critical" comment when it recovers.
+ * @param {CheckResult[]} checks
+ * @param {Record<string, Status>} [previous]
  * @returns {Record<string, Status>}
  */
-export function stateOf(checks) {
+export function stateOf(checks, previous = {}) {
   /** @type {Record<string, Status>} */
   const state = {};
-  for (const check of checks) state[check.id] = check.status;
+  for (const check of checks) {
+    const carried = previous[check.id];
+    state[check.id] = check.status === 'error' && carried && carried !== 'error' ? carried : check.status;
+  }
   return state;
+}
+
+/**
+ * The state marker lives in an editable issue body. It is only trusted when the body was never edited or was last
+ * edited by the workflow itself; otherwise it is ignored (worst case: one extra "newly critical" comment).
+ * @param {string | null | undefined} body
+ * @param {string | null | undefined} lastEditor login of the last body editor, null when never edited
+ * @returns {Record<string, Status>}
+ */
+export function trustedPreviousState(body, lastEditor) {
+  if (lastEditor && !BOT_EDITORS.has(lastEditor)) return {};
+  return parseState(body);
 }
 
 /**
@@ -162,19 +210,22 @@ export function newlyCritical(previous, current) {
 }
 
 /**
- * Decides what to do with the single report issue.
- * @param {{ exists: boolean, open: boolean, overall: Exclude<Status, 'skipped'>, previous: Record<string, Status>, current: Record<string, Status> }} input
+ * Decides what to do with the single report issue. A degraded run (any check errored) is never healthy: the issue is
+ * not closed and a closed issue is reopened.
+ * @param {{ exists: boolean, open: boolean, checks: CheckResult[], previous: Record<string, Status> }} input
  */
-export function planIssueUpdate({ exists, open, overall, previous, current }) {
-  const healthy = overall === 'ok';
-  const critical = newlyCritical(previous, current);
+export function planIssueUpdate({ exists, open, checks, previous }) {
+  const { healthy } = summarizeChecks(checks);
+  const state = stateOf(checks, previous);
+  const critical = newlyCritical(previous, state);
   return {
     create: !exists && !healthy,
     update: exists,
     close: exists && open && healthy,
     reopen: exists && !open && !healthy,
-    comment: !healthy && critical.length > 0,
+    comment: critical.length > 0,
     newlyCritical: critical,
+    state,
   };
 }
 
@@ -187,26 +238,33 @@ export function planIssueUpdate({ exists, open, overall, previous, current }) {
  */
 function renderFinding(finding) {
   const url = safeUrl(finding.url);
-  const icon = finding.status === 'ok' ? '✅' : finding.status === 'warning' ? '⚠️' : finding.status === 'critical' ? '🔴' : '⏭️';
+  const icon = ICON[finding.status].split(' ')[0];
   return `- ${icon} ${escapeMarkdown(finding.text)}${url ? ` ([link](${url}))` : ''}`;
 }
 
 /**
- * @param {{ checks: CheckResult[], generatedAt: Date, runUrl?: string | null, trigger?: string, ref?: string }} input
+ * @param {{ checks: CheckResult[], generatedAt: Date, runUrl?: string | null, trigger?: string, ref?: string,
+ *   previous?: Record<string, Status> }} input
  */
-export function renderReport({ checks, generatedAt, runUrl, trigger, ref }) {
-  const overall = worstStatus(checks.map((c) => c.status));
+export function renderReport({ checks, generatedAt, runUrl, trigger, ref, previous = {} }) {
+  const { level, errors, label } = summarizeChecks(checks);
   const lines = [];
   lines.push('<!-- repo-guardian -->');
   lines.push(`## ${ISSUE_TITLE}`);
   lines.push('');
-  const meta = [`**Overall: ${ICON[overall]}**`, `updated ${generatedAt.toISOString().replace('T', ' ').slice(0, 16)} UTC`];
+  const overallText = label === 'degraded' ? '❗ degraded' : ICON[level];
+  const meta = [`**Overall: ${overallText}**`, `updated ${generatedAt.toISOString().replace('T', ' ').slice(0, 16)} UTC`];
   const run = safeUrl(runUrl);
   if (run) meta.push(`[workflow run](${run})`);
   if (trigger) meta.push(`trigger ${escapeMarkdown(trigger, 40)}`);
   if (ref) meta.push(`docs checked at ${escapeMarkdown(ref, 60)}`);
   lines.push(meta.join(' · '));
   lines.push('');
+  if (errors.length > 0) {
+    const names = errors.map((c) => escapeMarkdown(c.title, 80)).join(', ');
+    lines.push(`> ❗ **Degraded — ${errors.length} check${errors.length === 1 ? '' : 's'} could not run:** ${names}. Results are incomplete; this issue stays open until every check runs again.`);
+    lines.push('');
+  }
   lines.push('| Check | Status | Summary |');
   lines.push('|---|---|---|');
   for (const check of checks) {
@@ -223,9 +281,9 @@ export function renderReport({ checks, generatedAt, runUrl, trigger, ref }) {
     if (sorted.length > MAX_FINDINGS_PER_CHECK) lines.push(`- … and ${sorted.length - MAX_FINDINGS_PER_CHECK} more`);
   }
   lines.push('');
-  lines.push('<sub>Maintained by the Repo Guardian workflow (`.github/workflows/repo-guardian.yml`). This issue is updated in place, closed when everything is ok and reopened when not.</sub>');
+  lines.push('<sub>Maintained by the Repo Guardian workflow (`.github/workflows/repo-guardian.yml`). This issue is updated in place, closed when every check ran and everything is ok, and reopened when not. "Not checked" means intentionally skipped (e.g. needs an extra token); "could not run" means the check failed.</sub>');
   lines.push('');
-  lines.push(`<!-- ${STATE_MARKER} ${JSON.stringify({ v: 1, checks: stateOf(checks) })} -->`);
+  lines.push(`<!-- ${STATE_MARKER} ${JSON.stringify({ v: 1, checks: stateOf(checks, previous) })} -->`);
   return lines.join('\n');
 }
 
