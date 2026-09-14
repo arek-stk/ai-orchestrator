@@ -24,7 +24,16 @@ import type {
   Complexity,
   ConsultedAgent,
   DecisionOption,
+  Effort,
+  HealthBreakdownItem,
+  HealthScanStatus,
+  HealthScanTrigger,
+  HealthSignals,
+  Impact,
+  ImprovementCategory,
   LatencyClass,
+  ProposalSource,
+  ProposalStatus,
   MemoryScope,
   ModelCapabilities,
   ModelTier,
@@ -231,6 +240,7 @@ export const agentRuns = pgTable(
     toolsUsed: jsonb('tools_used').$type<string[]>().notNull().default(emptyArray),
     durationMs: integer('duration_ms'),
     error: text('error'),
+    cacheHit: boolean('cache_hit').notNull().default(false),
     startedAt: ts('started_at').notNull().defaultNow(),
     finishedAt: ts('finished_at'),
   },
@@ -372,6 +382,9 @@ export const usageLedger = pgTable(
     cacheReadTokens: bigint('cache_read_tokens', { mode: 'number' }).notNull().default(0),
     cacheWriteTokens: bigint('cache_write_tokens', { mode: 'number' }).notNull().default(0),
     costUsd: doublePrecision('cost_usd').notNull(),
+    /** Served from the agent output cache: cost_usd is 0, saved_usd is what the original call cost. */
+    cacheHit: boolean('cache_hit').notNull().default(false),
+    savedUsd: doublePrecision('saved_usd').notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [index('usage_created_idx').on(t.createdAt), index('usage_project_created_idx').on(t.projectId, t.createdAt)],
@@ -468,6 +481,7 @@ export const cacheEntries = pgTable(
     kind: text('kind').notNull(),
     contentHash: text('content_hash').notNull(),
     value: jsonb('value').$type<unknown>().notNull(),
+    hits: integer('hits').notNull().default(0),
     createdAt: createdAt(),
     expiresAt: ts('expires_at'),
   },
@@ -495,4 +509,81 @@ export const ciRuns = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [index('ci_runs_project_created_idx').on(t.projectId, t.createdAt), index('ci_runs_sha_idx').on(t.sha)],
+);
+
+// ---------------------------------------------------------------------------
+// Autonomous product improvement (spec §14)
+// ---------------------------------------------------------------------------
+
+export const healthScans = pgTable(
+  'health_scans',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    status: text('status').$type<HealthScanStatus>().notNull().default('queued'),
+    trigger: text('trigger').$type<HealthScanTrigger>().notNull(),
+    requestedBy: text('requested_by'),
+    healthScore: real('health_score'),
+    previousScore: real('previous_score'),
+    breakdown: jsonb('breakdown').$type<HealthBreakdownItem[]>().notNull().default(emptyArray),
+    signals: jsonb('signals').$type<HealthSignals>(),
+    proposalsCreated: integer('proposals_created').notNull().default(0),
+    proposalsSeen: integer('proposals_seen').notNull().default(0),
+    autoAccepted: integer('auto_accepted').notNull().default(0),
+    agentStatus: text('agent_status'),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    summary: text('summary'),
+    error: text('error'),
+    createdAt: createdAt(),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [
+    index('health_scans_project_created_idx').on(t.projectId, t.createdAt),
+    index('health_scans_status_idx').on(t.status),
+    // At most one queued or running scan per project, so concurrent requests cannot create an orphaned scan.
+    uniqueIndex('health_scans_project_active_uq')
+      .on(t.projectId)
+      .where(sql`status in ('queued', 'running')`),
+  ],
+);
+
+export const improvementProposals = pgTable(
+  'improvement_proposals',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    scanId: text('scan_id').references(() => healthScans.id, { onDelete: 'set null' }),
+    fingerprint: text('fingerprint').notNull(),
+    category: text('category').$type<ImprovementCategory>().notNull(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    rationale: text('rationale').notNull().default(''),
+    evidence: jsonb('evidence').$type<string[]>().notNull().default(emptyArray),
+    affectedPaths: jsonb('affected_paths').$type<string[]>().notNull().default(emptyArray),
+    acceptanceCriteria: jsonb('acceptance_criteria').$type<string[]>().notNull().default(emptyArray),
+    impact: text('impact').$type<Impact>().notNull(),
+    effort: text('effort').$type<Effort>().notNull(),
+    risk: text('risk').$type<Risk>().notNull(),
+    roiScore: real('roi_score').notNull(),
+    priority: integer('priority').notNull(),
+    source: text('source').$type<ProposalSource>().notNull(),
+    status: text('status').$type<ProposalStatus>().notNull().default('proposed'),
+    taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+    autoAccepted: boolean('auto_accepted').notNull().default(false),
+    decidedBy: text('decided_by'),
+    decidedAt: ts('decided_at'),
+    dismissReason: text('dismiss_reason'),
+    occurrences: integer('occurrences').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('improvement_proposals_project_fingerprint_uq').on(t.projectId, t.fingerprint),
+    index('improvement_proposals_project_status_idx').on(t.projectId, t.status, t.priority),
+  ],
 );

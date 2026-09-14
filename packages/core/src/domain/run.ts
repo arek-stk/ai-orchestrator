@@ -41,7 +41,7 @@ export interface FailureRecord {
  * exactly where it stopped. Agent outputs are stored as validated JSON and re-parsed on read.
  */
 export interface RunCheckpoint {
-  outputs: Partial<Record<'analysis' | 'plan' | 'design' | 'build' | 'tests' | 'debug' | 'review' | 'security', unknown>>;
+  outputs: Partial<Record<'analysis' | 'plan' | 'design' | 'build' | 'tests' | 'debug' | 'review' | 'security' | 'release', unknown>>;
   designDecisionId: string | null;
   changeset: FileChange[];
   /** Incremented on every change-set modification; prevents empty or duplicate commits. */

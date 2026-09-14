@@ -142,3 +142,82 @@ export const BlockerAnalysisSchema = z.object({
   confidence: Confidence,
 });
 export type BlockerAnalysis = z.infer<typeof BlockerAnalysisSchema>;
+
+// ---------------------------------------------------------------------------
+// Orchestration intelligence: health scan, file summaries, specialists
+// ---------------------------------------------------------------------------
+
+export const IMPROVEMENT_CATEGORIES = ['tech_debt', 'missing_tests', 'outdated_dependencies', 'security_risk', 'performance', 'ux', 'documentation'] as const;
+export type ImprovementCategory = (typeof IMPROVEMENT_CATEGORIES)[number];
+export const IMPACTS = ['low', 'medium', 'high'] as const;
+export type Impact = (typeof IMPACTS)[number];
+export const EFFORTS = ['small', 'medium', 'large'] as const;
+export type Effort = (typeof EFFORTS)[number];
+
+export const ProposalItemSchema = z.object({
+  key: z.string().regex(/^[a-z0-9-]{1,60}$/),
+  category: z.enum(IMPROVEMENT_CATEGORIES),
+  title: Text(200),
+  description: Text(2000),
+  rationale: Text(2000),
+  evidence: List(10, 500),
+  affectedPaths: List(20, 500),
+  impact: z.enum(IMPACTS),
+  effort: z.enum(EFFORTS),
+  risk: z.enum(['low', 'medium', 'high']),
+  acceptanceCriteria: List(10, 500),
+});
+export type ProposalItem = z.infer<typeof ProposalItemSchema>;
+
+export const HealthScanOutputSchema = z.object({
+  summary: Text(3000),
+  proposals: z.array(ProposalItemSchema).max(15),
+  confidence: Confidence,
+});
+export type HealthScanOutput = z.infer<typeof HealthScanOutputSchema>;
+
+export const DevOpsOutputSchema = z.object({
+  summary: Text(3000),
+  suggestions: z.array(ProposalItemSchema.extend({ area: z.enum(['ci', 'docker', 'deployment', 'observability']) })).max(10),
+  confidence: Confidence,
+});
+export type DevOpsOutput = z.infer<typeof DevOpsOutputSchema>;
+
+export const FileSummaryOutputSchema = z.object({
+  summaries: z.array(z.object({ path: z.string().min(1).max(500), summary: Text(800) })).max(20),
+  confidence: Confidence,
+});
+export type FileSummaryOutput = z.infer<typeof FileSummaryOutputSchema>;
+
+export const ResearchOutputSchema = z.object({
+  question: Text(1000),
+  findings: z.array(z.object({ claim: Text(1000), source: z.string().max(500).nullable(), confidence: Confidence })).max(15),
+  recommendation: Text(3000),
+  limitations: List(10, 500),
+  openQuestions: List(10, 500),
+  confidence: Confidence,
+});
+export type ResearchOutput = z.infer<typeof ResearchOutputSchema>;
+
+/** Same shape as the build output; verification and the docs.write tool restrict it to documentation paths. */
+export const DocumentationOutputSchema = z.object({
+  summary: Text(3000),
+  changes: z.array(FileChangeSchema).max(30),
+  notes: List(20),
+  confidence: Confidence,
+});
+export type DocumentationOutput = z.infer<typeof DocumentationOutputSchema>;
+
+export const RELEASE_CHECK_NAMES = ['tests', 'security', 'migrations', 'changelog', 'version', 'ci'] as const;
+export type ReleaseCheckName = (typeof RELEASE_CHECK_NAMES)[number];
+export const RELEASE_CHECK_STATUSES = ['pass', 'fail', 'warn', 'skipped'] as const;
+export type ReleaseCheckStatus = (typeof RELEASE_CHECK_STATUSES)[number];
+
+export const ReleaseReadinessOutputSchema = z.object({
+  verdict: z.enum(['ready', 'not_ready']),
+  summary: Text(3000),
+  checks: z.array(z.object({ name: z.enum(RELEASE_CHECK_NAMES), status: z.enum(RELEASE_CHECK_STATUSES), detail: Text(1000) })).max(12),
+  blockers: List(10, 500),
+  confidence: Confidence,
+});
+export type ReleaseReadinessOutput = z.infer<typeof ReleaseReadinessOutputSchema>;

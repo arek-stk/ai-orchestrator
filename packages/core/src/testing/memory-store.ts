@@ -1,4 +1,7 @@
+import type { AgentCacheEntry, AgentCacheStore } from '../agents/cache';
 import type { IndexedFile } from '../context/context-builder';
+import type { FileSummaryStore } from '../context/file-summarizer';
+import type { HealthScan, HealthScanRepository, ImprovementProposal, ProposalRepository } from '../intelligence/types';
 import type { RunStatus, TaskStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
 import type { AgentRun, Approval, Decision, MemoryItem, UsageEntry } from '../domain/records';
@@ -337,7 +340,122 @@ export function createMemoryStore(clock: Clock = systemClock) {
     replace: async (projectId, files) => void repoFileMap.set(projectId, clone([...files])),
   };
 
-  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger };
+  const cacheMap = new Map<string, AgentCacheEntry & { hits: number }>();
+  const agentCache: AgentCacheStore & { entries: typeof cacheMap } = {
+    entries: cacheMap,
+    get: async (key, at) => {
+      const entry = cacheMap.get(key);
+      if (!entry || (entry.expiresAt && entry.expiresAt.getTime() <= at.getTime())) return null;
+      return clone(entry);
+    },
+    set: async (entry) => void cacheMap.set(entry.key, { ...clone(entry), hits: 0 }),
+    recordHit: async (key) => {
+      const entry = cacheMap.get(key);
+      if (entry) entry.hits++;
+    },
+  };
+
+  const scanList: HealthScan[] = [];
+  const scans: HealthScanRepository = {
+    create: async (input) => {
+      // Check and insert run in one synchronous section, mirroring the partial unique index of the Drizzle store.
+      const active = scanList.find((s) => s.projectId === input.projectId && (s.status === 'queued' || s.status === 'running'));
+      if (active) return { scan: clone(active), created: false };
+      const scan: HealthScan = {
+        id: id('hsc'),
+        ...input,
+        status: 'queued',
+        healthScore: null,
+        previousScore: null,
+        breakdown: [],
+        signals: null,
+        proposalsCreated: 0,
+        proposalsSeen: 0,
+        autoAccepted: 0,
+        agentStatus: null,
+        costUsd: 0,
+        summary: null,
+        error: null,
+        createdAt: now(),
+        startedAt: null,
+        finishedAt: null,
+      };
+      scanList.push(scan);
+      return { scan: clone(scan), created: true };
+    },
+    get: async (scanId) => clone(scanList.find((s) => s.id === scanId) ?? null),
+    list: async (projectId, limit = 20) => clone([...scanList].reverse().filter((s) => s.projectId === projectId).slice(0, limit)),
+    findActive: async (projectId) => clone([...scanList].reverse().find((s) => s.projectId === projectId && (s.status === 'queued' || s.status === 'running')) ?? null),
+    update: async (scanId, patch) => {
+      const scan = scanList.find((s) => s.id === scanId);
+      if (!scan) throw new Error(`health scan ${scanId} not found`);
+      Object.assign(scan, clone(patch));
+      return clone(scan);
+    },
+  };
+
+  const proposalList: ImprovementProposal[] = [];
+  const proposals: ProposalRepository = {
+    upsert: async (input) => {
+      const existing = proposalList.find((p) => p.projectId === input.projectId && p.fingerprint === input.fingerprint);
+      if (existing) {
+        existing.occurrences++;
+        existing.updatedAt = now();
+        return { proposal: clone(existing), created: false };
+      }
+      const proposal: ImprovementProposal = {
+        ...clone(input),
+        id: id('imp'),
+        status: 'proposed',
+        taskId: null,
+        autoAccepted: false,
+        decidedBy: null,
+        decidedAt: null,
+        dismissReason: null,
+        occurrences: 1,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      proposalList.push(proposal);
+      return { proposal: clone(proposal), created: true };
+    },
+    get: async (proposalId) => clone(proposalList.find((p) => p.id === proposalId) ?? null),
+    list: async (filter) =>
+      clone(
+        proposalList
+          .filter((p) => (!filter.projectId || p.projectId === filter.projectId) && (!filter.statuses || filter.statuses.includes(p.status)))
+          .sort((a, b) => b.priority - a.priority || b.roiScore - a.roiScore)
+          .slice(0, filter.limit ?? 200),
+      ),
+    accept: async (proposalId, input) => {
+      const proposal = proposalList.find((p) => p.id === proposalId);
+      if (!proposal || proposal.status !== 'proposed') return null;
+      Object.assign(proposal, { status: 'accepted', taskId: input.taskId, decidedBy: input.decidedBy, autoAccepted: input.auto, decidedAt: now(), updatedAt: now() });
+      return clone(proposal);
+    },
+    dismiss: async (proposalId, input) => {
+      const proposal = proposalList.find((p) => p.id === proposalId);
+      if (!proposal || proposal.status !== 'proposed') return null;
+      Object.assign(proposal, { status: 'dismissed', decidedBy: input.decidedBy, dismissReason: input.reason, decidedAt: now(), updatedAt: now() });
+      return clone(proposal);
+    },
+  };
+
+  const fileSummaries: FileSummaryStore = {
+    updateSummaries: async (projectId, entries) => {
+      let updated = 0;
+      for (const entry of entries) {
+        const file = repoFileMap.get(projectId)?.find((f) => f.path === entry.path && f.sha === entry.sha);
+        if (file) {
+          file.summary = entry.summary;
+          updated++;
+        }
+      }
+      return updated;
+    },
+  };
+
+  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger, agentCache, scans, proposals, fileSummaries };
 }
 
 export type MemoryStore = ReturnType<typeof createMemoryStore>;

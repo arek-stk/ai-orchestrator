@@ -1,5 +1,6 @@
 import { AGENT_DEFINITIONS } from '../agents/definitions';
 import type { AgentRuntime } from '../agents/runtime';
+import type { FileSummaryStore } from '../context/file-summarizer';
 import { TERMINAL_RUN_STATUSES, type RunStage, type RunStatus, type StageStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
 import type { PipelineRun } from '../domain/run';
@@ -84,6 +85,8 @@ export interface OrchestratorDeps {
   sandbox: SandboxPort;
   repoIndex: RepoIndexer;
   repoFiles: RepoFileStore;
+  /** Enables file summaries in ANALYZE (spec §31). */
+  fileSummaries?: FileSummaryStore;
   toolAudit?: (entry: ToolAuditEntry) => void | Promise<void>;
   globalBudgetExhausted?: () => Promise<boolean>;
   options?: Partial<OrchestratorOptions>;

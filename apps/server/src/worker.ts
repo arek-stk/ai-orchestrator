@@ -63,6 +63,8 @@ export class WorkerPool {
       await this.container.admin.sessions.deleteExpired(this.container.clock.now());
       const expired = await expireApprovals(this.container, this.log);
       if (expired > 0) this.log.info({ expired }, 'approvals expired');
+      const maintenance = await this.container.intelligence.tick();
+      if (maintenance && (maintenance.scansQueued > 0 || maintenance.cachePurged > 0)) this.log.info(maintenance, 'intelligence maintenance');
     } catch (error) {
       this.log.error({ err: error }, 'scheduler tick failed');
     } finally {
@@ -91,10 +93,22 @@ export class WorkerPool {
 
   private async processNext(workerId: string): Promise<boolean> {
     const leaseMs = this.options.leaseMs ?? 15 * 60_000;
-    const [job] = await this.container.queue.claim(workerId, { types: [PIPELINE_STEP_JOB], leaseMs });
+    const [job] = await this.container.queue.claim(workerId, { types: [PIPELINE_STEP_JOB, ...this.container.intelligence.jobTypes], leaseMs });
     if (!job) return false;
 
     const heartbeat = setInterval(() => void this.container.queue.extendLease(job.id, workerId, leaseMs), leaseMs / 3);
+    if (job.type !== PIPELINE_STEP_JOB) {
+      try {
+        await this.container.intelligence.handleJob(job);
+        await this.container.queue.complete(job.id, workerId);
+      } catch (error) {
+        this.log.error({ err: error, jobId: job.id, type: job.type }, 'job failed');
+        await this.container.queue.fail(job.id, workerId, error instanceof Error ? error.message : String(error));
+      } finally {
+        clearInterval(heartbeat);
+      }
+      return true;
+    }
     try {
       const runId = String(job.payload.runId ?? '');
       const result = await this.container.orchestrator.step(runId);

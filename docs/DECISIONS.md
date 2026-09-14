@@ -218,3 +218,70 @@ Format: context → decision → consequences → status.
 * **Consequences:** New tables (messages, AI identities, leases, milestones) and task columns; migrations follow the
   current schema owner's `0001`. Implementation plan: `docs/plans/project-room.md`.
 * **Status:** Accepted (2026-09-14), implementation after the running module PRs are merged
+
+## ADR-013 — Project Health Scan: deterministic score, ROI-ranked proposals, guarded auto-acceptance
+* **Context:** Spec §14 asks for autonomous product improvement without "unrequested large changes". Model output is
+  not reproducible, and an improvement loop must not flood projects with work or spend unbounded budget.
+* **Decision:**
+  * The health score (0–100) is computed **only from deterministic signals** (repository index, dependency manifests,
+    failure memory, recent run outcomes, blocked tasks) as capped penalties per component; the breakdown and signals
+    are persisted with each scan in `health_scans`.
+  * Proposals come from heuristics plus at most one `health_scan` and one `devops_review` agent call per scan, under a
+    per-scan cost cap (default $1) enforced through the `AgentRuntime` run budget. A budget pause degrades to a
+    heuristics-only scan. Agent proposals must cite evidence; affected paths not in the index are dropped.
+  * Priority = log-scaled ROI `impact × 10 / (effort × risk)`; improvement tasks are capped at priority 5 so they never
+    outrank requested work. Proposals are deduplicated by fingerprint (category + normalised title); decisions are
+    sticky, so a dismissed improvement never returns.
+  * A proposal becomes a `BACKLOG` task only when a human accepts it, or automatically when autonomy level ≥ 3 **and**
+    risk = low **and** effort = small, limited to 3 per scan and 5 open auto-created tasks per project. Security
+    findings that need secret rotation are rated medium risk and never auto-accepted.
+  * One scan = one durable `project.health_scan` job (dedupe per project); scheduled daily for projects at level ≥ 1
+    with a repository, manual only at level 0.
+* **Consequences:** Scores are explainable and comparable across scans; the improvement loop is bounded in cost and
+  work in progress. Registry lookups for outdated versions need a network-enabled `dependency.scan` tool (not yet built).
+* **Status:** Accepted (2026-09-14)
+
+## ADR-014 — Agent output cache and file summaries (spec §31)
+* **Context:** Analysis, summaries and health scans are repeated with identical inputs; `cache_entries` and
+  `repo_files.summary` existed but were unused. Caching code-changing agents would silently reuse stale results.
+* **Decision:**
+  * Definitions opt in with `cacheTtlMs`. Key = sha256(project, definition key, routed model id, system prompt, rendered
+    prompt), so any change in context, model or prompt is a miss and nothing is shared across projects. Hits are
+    re-validated against schema and verify checks. `NON_CACHEABLE_AGENT_KEYS` hard-excludes plan, design, build,
+    test, debug, review, security, synthesis, blocker analysis, documentation, release readiness and research.
+  * Enabled for `analyze` (24 h), `health_scan` and `devops_review` (12 h), `file_summary` (30 d). A hit is served
+    before the budget gate, recorded as an agent run with `cache_hit` and as a ledger row with `cost_usd = 0` and
+    `saved_usd` = original cost; `agent.completed` carries `cached`. Usage statistics expose `cacheHits` and `savedUsd`.
+  * File summaries: fast-tier `file_summary` agent, batches of ≤ 6 files ≥ 2 KB, ≤ 1–2 batches per call site, ordered
+    by task relevance or importer count. Stored with `summary_sha = blob sha` and only if the sha still matches; the
+    repository index returns a summary only while `summary_sha = sha`.
+* **Consequences:** Repeated scans and analyses cost nothing and the savings are visible in cost data. Cache writes are
+  best effort and never fail a successful agent call.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-015 — Specialists: documentation, release readiness, DevOps, research (spec §5)
+* **Context:** Roles existed without definitions. The spec requires more specialists but "no unnecessary agents".
+* **Decision:**
+  * **Documentation** implements `docs` tasks instead of the build agent and writes only through the new `docs.write`
+    tool, which accepts documentation paths only (Markdown/RST, `docs/`, README/CHANGELOG/…, OpenAPI files). Its verify
+    check rejects code paths as well.
+  * **Release readiness** runs in DEPLOY before the merge/dispatch and before the production deploy approval:
+    deterministic checks (tests, security, migrations, changelog, version, CI) first — a failing check blocks without
+    a model call — then the release agent; `not_ready` blocks the run with named blockers. The verdict is attached to
+    the approval and reused after it.
+  * **DevOps** runs only inside a health scan and only when CI or container files exist; its suggestions become
+    proposals, never direct changes.
+  * **Research** runs only on an explicit API request (`project.research` job), never in the default pipeline. It has
+    no tools (no web access yet), and its result is stored as memory; PLAN includes research linked to its task.
+* **Consequences:** Four specialists with least-privilege tools and deterministic checks; the default pipeline gains
+  at most one model call (release readiness) and only for projects that deploy.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-016 — Orchestration intelligence API lives in its own route module
+* **Context:** Several contributors change `apps/server` in parallel; `routes.ts` is a merge hotspot.
+* **Decision:** Health scans, proposals and research are served from `apps/server/src/routes-health.ts`, registered
+  with one line in `app.ts`. Composition lives in `apps/server/src/intelligence.ts`; workers claim its job types.
+  Mutations require the operator role and write audit entries, like every other mutating route, and every
+  project-scoped read or action goes through the per-project access control of ADR-022.
+* **Consequences:** Feature areas can grow without touching the core route file.
+* **Status:** Accepted (2026-09-14)

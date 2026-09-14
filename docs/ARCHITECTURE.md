@@ -82,7 +82,9 @@ One loop iteration = one durable job (`pipeline.step`). There is no unbounded in
 ### 4.4 Agents
 Contract: `canHandle / plan / execute / verify` (`packages/core/src/agents/contract.ts`).
 MVP agents: Planning, Build, Test, Debug, Code Review. Registered definitions (used by council):
-Architecture, Security. Each definition declares role, default capability tier, output schema,
+Architecture, Security. Specialists (ADR-015): Documentation (docs tasks, `docs.write` only), Release readiness
+(before DEPLOY), DevOps (health scans only), Research (explicit request only), Health scanner and File summarizer
+(ADR-013/014). Each definition declares role, default capability tier, output schema,
 tool permissions. Agents return **structured JSON validated with zod**; invalid output is a failed
 attempt, never silently accepted.
 
@@ -114,6 +116,9 @@ allow-listed command profile (e.g. `npm test`).
 Repository index (tree + per-file summaries keyed by blob SHA) → relevance ranking for the task
 (path/symbol/keyword scoring + dependency neighbours + failure memory hits) → greedy packing into the
 model's token budget. Summaries are cached by content hash and reused while the SHA is unchanged.
+The fast-tier File Summarizer fills missing summaries (bounded batches) in ANALYZE and health scans; deterministic,
+side-effect-free agents use the TTL agent output cache in `cache_entries`, whose hits are recorded as zero-cost ledger
+rows with the saved amount (ADR-014).
 
 ### 4.9 Memory
 `memories` table with scopes `project | task | failure`. Decisions have their own table for
@@ -177,7 +182,14 @@ listeners load the row, deduplicate by id and replay gaps after reconnects (ADR-
 | CI code failure | Classified `code` → debug loop (bounded) |
 | Budget exhausted | Run `PAUSED`, `budget.exhausted` event, dashboard alert |
 
+### 4.14 Autonomous product improvement (ADR-013)
+`HealthScanner` (`packages/core/src/intelligence`) runs as one bounded `project.health_scan` job: deterministic signals →
+health score (persisted on `projects.health_score` and in `health_scans`) → heuristic proposals + ≤ 1 scan-agent and
+≤ 1 DevOps call under a per-scan cost cap → ROI-ranked, fingerprint-deduplicated `improvement_proposals`. Proposals
+become BACKLOG tasks when accepted via API, or automatically only at autonomy ≥ 3 for low-risk, small-effort proposals
+(capped). API: `apps/server/src/routes-health.ts`. Events: `project.health_scanned`, `improvement.proposed|accepted|dismissed`.
+
 ## 7. Deferred (post-MVP, interfaces already in place)
 Temporal workflow engine (behind `WorkflowEngine`), BullMQ/Redis queue (behind `JobQueue`), additional
-model providers, Research/Documentation/DevOps/Release/Frontend/Backend/Database agents, autonomous
-product-improvement scans, image publishing and orchestrated (Kubernetes) deployments.
+model providers, Frontend/Backend/Database specialist agents, web research tool (`research.web`) and registry-based
+dependency freshness checks (`dependency.scan`), image publishing and orchestrated (Kubernetes) deployments.

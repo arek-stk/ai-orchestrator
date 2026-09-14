@@ -4,4 +4,5 @@ export * from './ids';
 export * from './job-queue';
 export * from './mappers';
 export * from './repositories';
+export * from './health-repositories';
 export * as schema from './schema';

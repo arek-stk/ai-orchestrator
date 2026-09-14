@@ -134,6 +134,7 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
     error: row.error,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
+    cacheHit: row.cacheHit,
   };
 }
 
