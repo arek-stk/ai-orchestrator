@@ -34,6 +34,7 @@ const EnvSchema = z.object({
   OPENAI_COMPATIBLE_API_KEY: optionalString,
   GLOBAL_DAILY_BUDGET_USD: z.coerce.number().min(0).default(25),
   SANDBOX: z.enum(['docker', 'none']).default('none'),
+  SANDBOX_EGRESS_NETWORK: optionalString,
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(2),
   SCHEDULER_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
   DEMO_LATENCY_MS: z.coerce.number().int().min(0).max(30_000).default(600),
@@ -62,6 +63,8 @@ export interface ServerConfig {
   };
   globalDailyBudgetUsd: number;
   sandbox: 'docker' | 'none';
+  /** Docker network with restricted egress used for dependency installation; null = installs are refused. */
+  sandboxEgressNetwork: string | null;
   workerConcurrency: number;
   schedulerIntervalMs: number;
   demoLatencyMs: number;
@@ -113,6 +116,7 @@ export function loadConfig(
     },
     globalDailyBudgetUsd: parsed.GLOBAL_DAILY_BUDGET_USD,
     sandbox: parsed.SANDBOX,
+    sandboxEgressNetwork: parsed.SANDBOX_EGRESS_NETWORK,
     workerConcurrency: parsed.WORKER_CONCURRENCY,
     schedulerIntervalMs: parsed.SCHEDULER_INTERVAL_MS,
     demoLatencyMs: overrides.demoLatencyMs ?? parsed.DEMO_LATENCY_MS,

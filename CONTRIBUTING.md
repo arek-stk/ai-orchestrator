@@ -46,6 +46,15 @@ npm test            # vitest, no database or Docker required (embedded PGlite, i
 * **Dependabot** opens grouped weekly updates; minor and patch updates auto-merge after CI passes.
 * **Labeler** labels pull requests by the areas they touch; **stale** closes inactive issues after 74 days.
 
+## AI assistance
+
+* Copilot and other coding agents follow [`.github/copilot-instructions.md`](.github/copilot-instructions.md) and
+  [`AGENTS.md`](AGENTS.md); keep them in sync with architecture changes.
+* Copilot reviews every pull request automatically. Treat its comments like any reviewer's: fix or answer, then
+  resolve the conversation (required on `main`).
+* Issues can be assigned to the Copilot coding agent; `copilot-setup-steps.yml` prepares its environment.
+* AI triage labels and PR summaries are advisory. Correct them when they are wrong.
+
 ## Code style
 
 * TypeScript strict mode, ESM, named exports.

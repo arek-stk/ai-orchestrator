@@ -44,6 +44,12 @@ export const nodeExec: ExecFn = (file, args, { timeoutMs }) =>
 
 export interface DockerSandboxOptions {
   github: GitHubPort;
+  /**
+   * Docker network used when a request needs registry access (dependency installation). It must restrict egress
+   * (e.g. only a package-registry proxy; no link-local, RFC 1918 or metadata endpoints). Unset → such requests
+   * are refused instead of silently getting full internet access.
+   */
+  egressNetwork?: string | null;
   image?: string;
   memory?: string;
   cpus?: string;
@@ -60,7 +66,8 @@ export interface DockerArgsInput {
   workspace: string;
   image: string;
   command: string;
-  network: 'none' | 'registry';
+  /** Docker network name; `none` disables networking. */
+  network: string;
   memory: string;
   cpus: string;
   pidsLimit: number;
@@ -72,7 +79,7 @@ export function buildDockerArgs(input: DockerArgsInput): string[] {
     'run',
     '--rm',
     '--name', input.containerName,
-    '--network', input.network === 'none' ? 'none' : 'bridge',
+    '--network', input.network,
     '--read-only',
     '--tmpfs', '/tmp:rw,exec,size=1g',
     '--cap-drop', 'ALL',
@@ -146,6 +153,11 @@ export class DockerSandbox implements SandboxPort {
 
   async run(request: SandboxRunRequest): Promise<SandboxRunResult> {
     if (!this.available) return infrastructure('docker daemon is not available');
+    const egress = this.options.egressNetwork ?? null;
+    if (request.network === 'registry' && !egress) {
+      return infrastructure('dependency installation needs network access: configure SANDBOX_EGRESS_NETWORK (a Docker network restricted to a package-registry proxy)');
+    }
+    const network = request.network === 'registry' ? egress! : 'none';
 
     const workspace = await mkdtemp(join(this.options.workRoot ?? tmpdir(), 'orch-sandbox-'));
     try {
@@ -166,7 +178,7 @@ export class DockerSandbox implements SandboxPort {
             workspace,
             image: this.options.image ?? 'node:22-bookworm-slim',
             command,
-            network: request.network,
+            network,
             memory: this.options.memory ?? '2g',
             cpus: this.options.cpus ?? '2',
             pidsLimit: this.options.pidsLimit ?? 512,

@@ -229,10 +229,12 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const project = await repos.projects.get(id);
     if (!project) return reply.code(404).send(notFound('project'));
     const patch = ProjectPatchSchema.parse(request.body);
-    // Raising autonomy or changing gates/budgets is an admin decision.
-    const privileged = patch.autonomyLevel !== undefined || patch.settings !== undefined || patch.budgetUsd !== undefined || patch.repo !== undefined;
+    // Autonomy, repository, budget, settings and the profile (sandbox commands, deploy workflow, critical paths)
+    // define what agents may execute — an admin decision.
+    const privileged =
+      patch.autonomyLevel !== undefined || patch.settings !== undefined || patch.budgetUsd !== undefined || patch.repo !== undefined || patch.profile !== undefined;
     if (privileged && !['admin', 'owner'].includes(request.user!.role)) {
-      return reply.code(403).send({ error: 'changing autonomy, repository, budget or settings requires the admin role' });
+      return reply.code(403).send({ error: 'changing autonomy, repository, budget, profile or settings requires the admin role' });
     }
     const updated = await repos.projects.update(id, {
       ...(patch.name !== undefined ? { name: patch.name } : {}),
