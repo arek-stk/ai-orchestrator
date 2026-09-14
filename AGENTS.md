@@ -13,3 +13,6 @@ The essentials:
    never write to the default branch; never run agent-provided commands on the host.
 6. **Tests accompany every change**; use the in-memory GitHub and stores from `packages/core/src/testing`.
 7. **Conventional Commits** for commit messages and PR titles.
+8. **Shared project memory lives in the repo:** read `docs/STATE.md` first; record state changes there, decisions as
+   ADRs in `docs/DECISIONS.md`, and findings in `docs/research/` or `docs/plans/` — not in a private assistant memory.
+   The repository is public, so never write secrets or personal data into these files.
