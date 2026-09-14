@@ -285,3 +285,45 @@ Format: context → decision → consequences → status.
   project-scoped read or action goes through the per-project access control of ADR-022.
 * **Consequences:** Feature areas can grow without touching the core route file.
 * **Status:** Accepted (2026-09-14)
+
+## ADR-031 — Every new dependency requires human approval
+* **Context:** Third-party code is the largest supply-chain risk the orchestrator can introduce: typosquatted or
+  "slopsquatted" packages (names a model hallucinates and an attacker then registers), compromised maintainers, and
+  GitHub Actions, MCP servers or editor/Claude plugins that run with developer or CI credentials. Agents already
+  propose new dependencies in normal tasks; the planned Plugin Scout and the autopilot will propose more. On
+  2026-09-14 the owner decided that every new dependency needs a human, whatever proposes it and at every autonomy
+  level (`docs/plans/plugin-scout.md` §9.3).
+* **Decision:**
+  * New gated action `dependency_addition` with a hard rule in `requiresApproval`: it always requires approval at
+    autonomy levels 0–4 (no level exception, unlike `production_deploy`) and regardless of the project gate
+    configuration. `ProjectSettingsSchema` rejects disabling it, stored settings are normalised to enabled, and the
+    settings UI shows it locked.
+  * `detectDependencyAdditions` (IO-free, `packages/core/src/approval/dependencies.ts`) compares the base and new
+    content of changed files and returns structured findings (kind, ecosystem, name, requested version, file).
+    Covered: `package.json` (dependencies, devDependencies, optional, peer; aliases and Git/URL sources),
+    `requirements*.txt` (including new package indexes), `pyproject.toml` (PEP 621, optional and dependency groups,
+    build requires, Poetry, uv, PDM), `Pipfile`, `Cargo.toml`, `go.mod`, `Gemfile`, `composer.json`, `*.csproj` and
+    NuGet props, `pom.xml`, `build.gradle(.kts)` and Gradle version catalogs; lockfile-only additions (direct
+    dependencies in `package-lock.json`, `pnpm-lock.yaml`, `bun.lock`, `Gemfile.lock`, NuGet `packages.lock.json`;
+    flat lockfiles such as `yarn.lock`, `Cargo.lock`, `poetry.lock`/`uv.lock`, `Pipfile.lock`, `composer.lock`, `go.sum`
+    only when no manifest of that ecosystem changed); workflow and composite-action `uses:`; `.mcp.json` (identity is
+    the launched package, image or URL); `.claude/settings.json` plugins, marketplaces and MCP enablement;
+    `.vscode/extensions.json` recommendations. Version bumps and removals are not gated; they stay with the
+    Dependabot/review flow.
+  * Parsers are linear scanners without backtracking regular expressions. Unparsable or oversized manifests count as
+    a possible addition, with the reason stated, and are gated.
+  * The approval lists the findings with a registry link built from a fixed per-ecosystem URL template and a
+    validated name (rebuilt when the API reads it, never taken from repository text), plus a risk hint: GitHub
+    Actions, MCP servers, Claude plugins and VS Code extensions are high risk. The approvals API adds a typed
+    `dependencies` field; `details` is unchanged for existing clients.
+  * Enforcement: after IMPLEMENT (with the other change-set gates), in TEST before a sandbox run, and in COMMIT before
+    anything is published. The tool router backs this up with an `approvalCheck` on `git.commit` and on `test.run`
+    with `install`. The run waits like for any other gate, and approval expiry (ADR-023) applies.
+  * Decision memory: an approval grants `dependency_addition:<fingerprint>` for exactly the approved, sorted set of
+    findings, stored in the run checkpoint. A change set that adds anything else (or another version) needs a new
+    approval; grants are never reused by other runs or tasks.
+* **Consequences:** Relation to ADR-013: auto-accepted health-scan proposals still hit this gate when their change set
+  adds a dependency; auto-acceptance never implies dependency approval. A new workflow `uses:` needs both the
+  `critical_infrastructure` and the `dependency_addition` approval. Transitive packages are not reviewed one by one.
+  Hooks and devcontainer features are not covered yet.
+* **Status:** Accepted (2026-09-14)
