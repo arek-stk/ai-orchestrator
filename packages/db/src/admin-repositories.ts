@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lt, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, sql, type SQL } from 'drizzle-orm';
 import type { IndexedFile, ModelConfig, ProviderKind, RepoFileStore, UserRole } from '@orch/core';
 import type { Db } from './client';
 import { newId } from './ids';
@@ -300,21 +300,23 @@ export class DrizzleRepoFileStore implements RepoFileStore {
 export class UsageStatsRepository {
   constructor(private readonly db: Db) {}
 
-  private where(since: Date, projectId?: string): SQL {
+  /** `projectId` may be a list of projects (per-project access control, ADR-022). */
+  private where(since: Date, projectId?: string | readonly string[]): SQL {
     const conditions: SQL[] = [gte(t.usageLedger.createdAt, since)];
-    if (projectId) conditions.push(eq(t.usageLedger.projectId, projectId));
+    if (typeof projectId === 'string') conditions.push(eq(t.usageLedger.projectId, projectId));
+    else if (projectId) conditions.push(projectId.length > 0 ? inArray(t.usageLedger.projectId, [...projectId]) : sql`false`);
     return and(...conditions)!;
   }
 
   private readonly tokens = sql<number>`coalesce(sum(${t.usageLedger.inputTokens} + ${t.usageLedger.outputTokens} + ${t.usageLedger.cacheReadTokens} + ${t.usageLedger.cacheWriteTokens}), 0)`;
   private readonly cost = sql<number>`coalesce(sum(${t.usageLedger.costUsd}), 0)`;
 
-  async summary(since: Date, projectId?: string): Promise<{ costUsd: number; tokens: number; calls: number }> {
+  async summary(since: Date, projectId?: string | readonly string[]): Promise<{ costUsd: number; tokens: number; calls: number }> {
     const [row] = await this.db.select({ costUsd: this.cost, tokens: this.tokens, calls: countExpr }).from(t.usageLedger).where(this.where(since, projectId));
     return { costUsd: Number(row?.costUsd ?? 0), tokens: Number(row?.tokens ?? 0), calls: Number(row?.calls ?? 0) };
   }
 
-  async byDay(since: Date, projectId?: string): Promise<Array<{ day: string; costUsd: number; tokens: number }>> {
+  async byDay(since: Date, projectId?: string | readonly string[]): Promise<Array<{ day: string; costUsd: number; tokens: number }>> {
     const day = sql<string>`to_char(date_trunc('day', ${t.usageLedger.createdAt} at time zone 'UTC'), 'YYYY-MM-DD')`;
     const rows = await this.db
       .select({ day, costUsd: this.cost, tokens: this.tokens })
@@ -325,7 +327,7 @@ export class UsageStatsRepository {
     return rows.map((r) => ({ day: r.day, costUsd: Number(r.costUsd), tokens: Number(r.tokens) }));
   }
 
-  async byModel(since: Date, projectId?: string): Promise<Array<{ provider: string; modelId: string; costUsd: number; tokens: number; calls: number }>> {
+  async byModel(since: Date, projectId?: string | readonly string[]): Promise<Array<{ provider: string; modelId: string; costUsd: number; tokens: number; calls: number }>> {
     const rows = await this.db
       .select({ provider: t.usageLedger.provider, modelId: t.usageLedger.modelId, costUsd: this.cost, tokens: this.tokens, calls: countExpr })
       .from(t.usageLedger)
@@ -344,6 +346,84 @@ export class UsageStatsRepository {
   }
 }
 
+export interface ProjectMembership {
+  projectId: string;
+  userId: string;
+  role: UserRole;
+  createdAt: Date;
+}
+
+export interface ProjectMemberView extends ProjectMembership {
+  login: string;
+  name: string | null;
+  avatarUrl: string | null;
+  globalRole: UserRole;
+}
+
+/** Per-project membership (ADR-022), backed by the `project_members` table. */
+export class DrizzleProjectMemberRepository {
+  constructor(private readonly db: Db) {}
+
+  async listForProject(projectId: string): Promise<ProjectMemberView[]> {
+    return this.db
+      .select({
+        projectId: t.projectMembers.projectId,
+        userId: t.projectMembers.userId,
+        role: t.projectMembers.role,
+        createdAt: t.projectMembers.createdAt,
+        login: t.users.login,
+        name: t.users.name,
+        avatarUrl: t.users.avatarUrl,
+        globalRole: t.users.role,
+      })
+      .from(t.projectMembers)
+      .innerJoin(t.users, eq(t.projectMembers.userId, t.users.id))
+      .where(eq(t.projectMembers.projectId, projectId))
+      .orderBy(t.users.login);
+  }
+
+  async listForUser(userId: string, limit = 500): Promise<ProjectMembership[]> {
+    return this.db.select().from(t.projectMembers).where(eq(t.projectMembers.userId, userId)).orderBy(t.projectMembers.projectId).limit(limit);
+  }
+
+  async upsert(input: { projectId: string; userId: string; role: UserRole }): Promise<ProjectMembership> {
+    const [row] = await this.db
+      .insert(t.projectMembers)
+      .values(input)
+      .onConflictDoUpdate({ target: [t.projectMembers.projectId, t.projectMembers.userId], set: { role: input.role } })
+      .returning();
+    return row!;
+  }
+
+  async remove(projectId: string, userId: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(t.projectMembers)
+      .where(and(eq(t.projectMembers.projectId, projectId), eq(t.projectMembers.userId, userId)))
+      .returning({ userId: t.projectMembers.userId });
+    return rows.length > 0;
+  }
+}
+
+/** Cheap aggregate counts for the metrics endpoint (ADR-021). */
+export class OperationalStatsRepository {
+  constructor(private readonly db: Db) {}
+
+  async runsByStatus(): Promise<Record<string, number>> {
+    const rows = await this.db.select({ status: t.pipelineRuns.status, n: countExpr }).from(t.pipelineRuns).groupBy(t.pipelineRuns.status);
+    return Object.fromEntries(rows.map((r) => [r.status, Number(r.n)]));
+  }
+
+  async activeAgentRuns(): Promise<number> {
+    const [row] = await this.db.select({ n: countExpr }).from(t.agentRuns).where(eq(t.agentRuns.status, 'running'));
+    return Number(row?.n ?? 0);
+  }
+
+  async pendingApprovals(): Promise<number> {
+    const [row] = await this.db.select({ n: countExpr }).from(t.approvals).where(eq(t.approvals.status, 'pending'));
+    return Number(row?.n ?? 0);
+  }
+}
+
 export interface AdminRepositories {
   users: DrizzleUserRepository;
   sessions: DrizzleSessionRepository;
@@ -353,6 +433,8 @@ export interface AdminRepositories {
   audit: DrizzleAuditLogRepository;
   repoFiles: DrizzleRepoFileStore;
   stats: UsageStatsRepository;
+  members: DrizzleProjectMemberRepository;
+  ops: OperationalStatsRepository;
 }
 
 export function createAdminRepositories(db: Db): AdminRepositories {
@@ -365,5 +447,7 @@ export function createAdminRepositories(db: Db): AdminRepositories {
     audit: new DrizzleAuditLogRepository(db),
     repoFiles: new DrizzleRepoFileStore(db),
     stats: new UsageStatsRepository(db),
+    members: new DrizzleProjectMemberRepository(db),
+    ops: new OperationalStatsRepository(db),
   };
 }

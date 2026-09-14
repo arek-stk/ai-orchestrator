@@ -28,6 +28,7 @@ import {
   type RunStatus,
 } from '@orch/core';
 import { parseGitHubWebhook, verifyGitHubSignature } from '@orch/integrations';
+import { createProjectAcl, eventVisible } from './acl';
 import { requireRole } from './auth';
 import type { Container } from './container';
 import { encryptSecret } from './crypto';
@@ -108,6 +109,14 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   const notFound = (entity: string) => ({ error: `${entity} not found` });
 
+  // Per-project access control (ADR-022): every project-scoped read and action goes through `acl`.
+  const acl = createProjectAcl(config.projectAcl, admin);
+  const usageScope = async (request: Parameters<typeof acl.visibleProjects>[0], projectId?: string) => {
+    if (projectId) return projectId;
+    const visible = await acl.visibleProjects(request);
+    return visible === null ? undefined : [...visible.keys()];
+  };
+
   // ---------------------------------------------------------------------------
   // Health & dashboard
   // ---------------------------------------------------------------------------
@@ -120,19 +129,23 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     sandbox: container.sandbox.available ? 'docker' : 'none',
   }));
 
-  app.get('/api/dashboard', viewer, async () => {
+  app.get('/api/dashboard', viewer, async (request) => {
     const now = container.clock.now();
-    const [projects, tasks, activeRuns, recentRuns, activeAgents, approvals, queueStats, today, events] = await Promise.all([
+    const visible = await acl.visibleProjects(request);
+    const scoped = <T>(fetch: (projectId?: string) => Promise<T[]>, limit: number, sortKey: (item: T) => number) => acl.scopedList(request, undefined, fetch, { limit, sortKey });
+    const byProject = (projectId?: string) => (projectId ? { projectId } : {});
+    const [allProjects, tasks, activeRuns, recentRuns, activeAgents, approvals, queueStats, today, events] = await Promise.all([
       repos.projects.list(),
-      repos.tasks.list({ limit: 2000 }),
-      repos.runs.list({ statuses: ACTIVE_RUNS, limit: 200 }),
-      repos.runs.list({ statuses: ['SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED'], limit: 500 }),
-      repos.agentRuns.list({ status: 'running', limit: 100 }),
-      repos.approvals.list({ status: 'pending', limit: 100 }),
+      scoped((p) => repos.tasks.list({ ...byProject(p), limit: 2000 }), 2000, (t) => t.createdAt.getTime()),
+      scoped((p) => repos.runs.list({ ...byProject(p), statuses: ACTIVE_RUNS, limit: 200 }), 200, (r) => r.startedAt.getTime()),
+      scoped((p) => repos.runs.list({ ...byProject(p), statuses: ['SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED'], limit: 500 }), 500, (r) => r.startedAt.getTime()),
+      scoped((p) => repos.agentRuns.list({ ...byProject(p), status: 'running', limit: 100 }), 100, (a) => a.startedAt.getTime()),
+      scoped((p) => repos.approvals.list({ ...byProject(p), status: 'pending', limit: 100 }), 100, (a) => a.requestedAt.getTime()),
       queue.stats(),
-      admin.stats.summary(container.startOfDay()),
-      repos.events.list({ order: 'desc', limit: 30 }),
+      admin.stats.summary(container.startOfDay(), await usageScope(request)),
+      scoped((p) => repos.events.list({ ...byProject(p), order: 'desc', limit: 30 }), 30, (e) => Number(e.id)),
     ]);
+    const projects = visible === null ? allProjects : allProjects.filter((p) => visible.has(p.id));
     const weekAgo = now.getTime() - 7 * DAY_MS;
     const lastWeek = recentRuns.filter((r) => (r.finishedAt?.getTime() ?? 0) >= weekAgo);
     const tasksByStatus = Object.fromEntries(TASK_STATUSES.map((s) => [s, tasks.filter((t) => t.status === s).length]));
@@ -170,9 +183,10 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
   // Projects
   // ---------------------------------------------------------------------------
 
-  app.get('/api/projects', viewer, async () => {
+  app.get('/api/projects', viewer, async (request) => {
+    const visible = await acl.visibleProjects(request);
     const [projects, activeRuns, openTasks] = await Promise.all([
-      repos.projects.list(),
+      repos.projects.list().then((all) => (visible === null ? all : all.filter((p) => visible.has(p.id)))),
       repos.runs.list({ statuses: ACTIVE_RUNS, limit: 500 }),
       repos.tasks.list({ statuses: ['BACKLOG', 'READY', 'RUNNING', 'WAITING_APPROVAL', 'WAITING_CHILDREN', 'PAUSED', 'BLOCKED'], limit: 5000 }),
     ]);
@@ -211,6 +225,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.get('/api/projects/:id', viewer, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id);
     const project = await repos.projects.get(id);
     if (!project) return reply.code(404).send(notFound('project'));
     const since = new Date(container.clock.now().getTime() - 30 * DAY_MS);
@@ -226,6 +241,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.patch('/api/projects/:id', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id, 'operator');
     const project = await repos.projects.get(id);
     if (!project) return reply.code(404).send(notFound('project'));
     const patch = ProjectPatchSchema.parse(request.body);
@@ -253,6 +269,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.post('/api/projects/:id/pause', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id, 'operator');
     if (!(await repos.projects.get(id))) return reply.code(404).send(notFound('project'));
     await audit(request, 'project.pause', id);
     return { project: await repos.projects.update(id, { status: 'PAUSED' }) };
@@ -260,6 +277,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.post('/api/projects/:id/resume', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id, 'operator');
     if (!(await repos.projects.get(id))) return reply.code(404).send(notFound('project'));
     await audit(request, 'project.resume', id);
     return { project: await repos.projects.update(id, { status: 'IDLE' }) };
@@ -267,6 +285,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.get('/api/projects/:id/memory', viewer, async (request) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id);
     const { scope, q } = z.object({ scope: z.enum(['project', 'task', 'failure']).optional(), q: z.string().max(200).optional() }).parse(request.query);
     return { memories: await repos.memories.search(id, { ...(scope ? { scope } : {}), ...(q ? { text: q } : {}), limit: 100 }) };
   });
@@ -277,12 +296,14 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.get('/api/projects/:id/tasks', viewer, async (request) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id);
     const { status } = z.object({ status: z.enum(TASK_STATUSES).optional() }).parse(request.query);
     return { tasks: await repos.tasks.list({ projectId: id, ...(status ? { statuses: [status] } : {}), limit: 1000 }) };
   });
 
   app.post('/api/projects/:id/tasks', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    await acl.assertProject(request, id, 'operator');
     const project = await repos.projects.get(id);
     if (!project) return reply.code(404).send(notFound('project'));
     const input = TaskInputSchema.parse(request.body);
@@ -301,6 +322,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const { id } = IdParams.parse(request.params);
     const task = await repos.tasks.get(id);
     if (!task) return reply.code(404).send(notFound('task'));
+    await acl.assertProject(request, task.projectId, 'viewer', 'task');
     const [runs, decisions, children] = await Promise.all([
       repos.runs.list({ taskId: id, limit: 20 }),
       repos.decisions.list({ taskId: id, limit: 20 }),
@@ -313,6 +335,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const { id } = IdParams.parse(request.params);
     const task = await repos.tasks.get(id);
     if (!task) return reply.code(404).send(notFound('task'));
+    await acl.assertProject(request, task.projectId, 'operator', 'task');
     if (!['BACKLOG', 'READY', 'BLOCKED'].includes(task.status)) return reply.code(409).send({ error: `task is ${task.status}; only queued or blocked tasks can be edited` });
     const updated = await repos.tasks.update(id, TaskPatchSchema.parse(request.body));
     await audit(request, 'task.update', id);
@@ -321,6 +344,8 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.post('/api/tasks/:id/start', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    const existing = await repos.tasks.get(id);
+    if (existing) await acl.assertProject(request, existing.projectId, 'operator', 'task');
     const run = await orchestrator.startTask(id);
     if (!run) return reply.code(409).send({ error: 'task cannot be started (not ready, already running or missing)' });
     await audit(request, 'task.start', id, { runId: run.id });
@@ -331,6 +356,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const { id } = IdParams.parse(request.params);
     const task = await repos.tasks.get(id);
     if (!task) return reply.code(404).send(notFound('task'));
+    await acl.assertProject(request, task.projectId, 'operator', 'task');
     if (!['BLOCKED', 'FAILED', 'CANCELLED'].includes(task.status)) return reply.code(409).send({ error: `task is ${task.status}` });
     const updated = await repos.tasks.update(id, { status: 'READY', blockedReason: null, readySince: container.clock.now() });
     await audit(request, 'task.retry', id);
@@ -341,6 +367,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const { id } = IdParams.parse(request.params);
     const task = await repos.tasks.get(id);
     if (!task) return reply.code(404).send(notFound('task'));
+    await acl.assertProject(request, task.projectId, 'operator', 'task');
     for (const run of await repos.runs.list({ taskId: id, statuses: ACTIVE_RUNS })) await orchestrator.cancel(run.id, `cancelled by ${request.user!.login}`);
     const updated = await repos.tasks.update(id, { status: 'CANCELLED' });
     await audit(request, 'task.cancel', id);
@@ -353,13 +380,21 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.get('/api/runs', viewer, async (request) => {
     const query = z.object({ projectId: z.string().optional(), status: z.enum(RUN_STATUSES).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }).parse(request.query);
-    return { runs: await repos.runs.list({ ...(query.projectId ? { projectId: query.projectId } : {}), ...(query.status ? { statuses: [query.status] } : {}), limit: query.limit }) };
+    return {
+      runs: await acl.scopedList(
+        request,
+        query.projectId,
+        (projectId) => repos.runs.list({ ...(projectId ? { projectId } : {}), ...(query.status ? { statuses: [query.status] } : {}), limit: query.limit }),
+        { limit: query.limit, sortKey: (r) => r.startedAt.getTime() },
+      ),
+    };
   });
 
   app.get('/api/runs/:id', viewer, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
     const run = await repos.runs.get(id);
     if (!run) return reply.code(404).send(notFound('run'));
+    await acl.assertProject(request, run.projectId, 'viewer', 'run');
     const [task, agentRuns, events, approvals, decisions] = await Promise.all([
       repos.tasks.get(run.taskId),
       repos.agentRuns.list({ runId: id, limit: 200 }),
@@ -372,6 +407,8 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.post('/api/runs/:id/resume', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    const existing = await repos.runs.get(id);
+    if (existing) await acl.assertProject(request, existing.projectId, 'operator', 'run');
     const result = await orchestrator.resume(id);
     if (!result) return reply.code(409).send({ error: 'only paused runs can be resumed' });
     await audit(request, 'run.resume', id);
@@ -380,6 +417,8 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.post('/api/runs/:id/cancel', operator, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
+    const existing = await repos.runs.get(id);
+    if (existing) await acl.assertProject(request, existing.projectId, 'operator', 'run');
     if (!(await orchestrator.cancel(id, `cancelled by ${request.user!.login}`))) return reply.code(409).send({ error: 'run is not active' });
     await audit(request, 'run.cancel', id);
     return { ok: true };
@@ -388,12 +427,18 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
   app.get('/api/agents', viewer, async (request) => {
     const query = z.object({ projectId: z.string().optional(), status: z.enum(['running', 'succeeded', 'failed']).optional(), role: z.enum(AGENT_ROLES).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
     return {
-      agentRuns: await repos.agentRuns.list({
-        ...(query.projectId ? { projectId: query.projectId } : {}),
-        ...(query.status ? { status: query.status } : {}),
-        ...(query.role ? { role: query.role } : {}),
-        limit: query.limit,
-      }),
+      agentRuns: await acl.scopedList(
+        request,
+        query.projectId,
+        (projectId) =>
+          repos.agentRuns.list({
+            ...(projectId ? { projectId } : {}),
+            ...(query.status ? { status: query.status } : {}),
+            ...(query.role ? { role: query.role } : {}),
+            limit: query.limit,
+          }),
+        { limit: query.limit, sortKey: (a) => a.startedAt.getTime() },
+      ),
     };
   });
 
@@ -411,18 +456,38 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
 
   app.get('/api/decisions', viewer, async (request) => {
     const query = z.object({ projectId: z.string().optional(), taskId: z.string().optional() }).parse(request.query);
-    return { decisions: await repos.decisions.list({ ...query, limit: 200 }) };
+    if (query.taskId) {
+      const task = await repos.tasks.get(query.taskId);
+      if (!task || (query.projectId && task.projectId !== query.projectId)) return { decisions: [] };
+      await acl.assertProject(request, task.projectId, 'viewer', 'task');
+      return { decisions: await repos.decisions.list({ projectId: task.projectId, taskId: task.id, limit: 200 }) };
+    }
+    return {
+      decisions: await acl.scopedList(request, query.projectId, (projectId) => repos.decisions.list({ ...(projectId ? { projectId } : {}), limit: 200 }), {
+        limit: 200,
+        sortKey: (d) => d.createdAt.getTime(),
+      }),
+    };
   });
 
   app.get('/api/decisions/:id', viewer, async (request, reply) => {
     const { id } = IdParams.parse(request.params);
     const decision = await repos.decisions.get(id);
-    return decision ? { decision } : reply.code(404).send(notFound('decision'));
+    if (!decision) return reply.code(404).send(notFound('decision'));
+    await acl.assertProject(request, decision.projectId, 'viewer', 'decision');
+    return { decision };
   });
 
   app.get('/api/approvals', viewer, async (request) => {
     const query = z.object({ status: z.enum(['pending', 'approved', 'rejected', 'expired']).optional(), projectId: z.string().optional() }).parse(request.query);
-    return { approvals: await repos.approvals.list({ ...query, limit: 200 }) };
+    return {
+      approvals: await acl.scopedList(
+        request,
+        query.projectId,
+        (projectId) => repos.approvals.list({ ...(projectId ? { projectId } : {}), ...(query.status ? { status: query.status } : {}), limit: 200 }),
+        { limit: 200, sortKey: (a) => a.requestedAt.getTime() },
+      ),
+    };
   });
 
   app.post('/api/approvals/:id/decide', adminOnly, async (request, reply) => {
@@ -430,6 +495,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const { status, comment } = z.object({ status: z.enum(['approved', 'rejected']), comment: z.string().trim().max(2000).nullable().default(null) }).parse(request.body);
     const approval = await repos.approvals.get(id);
     if (!approval) return reply.code(404).send(notFound('approval'));
+    await acl.assertProject(request, approval.projectId, 'admin', 'approval');
     if (approval.action === 'production_deploy' && status === 'approved' && request.user!.role !== 'owner') {
       return reply.code(403).send({ error: 'production deployments must be approved by an owner' });
     }
@@ -447,11 +513,14 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
   app.get('/api/costs', viewer, async (request) => {
     const { days, projectId } = z.object({ days: z.coerce.number().int().min(1).max(365).default(30), projectId: z.string().optional() }).parse(request.query);
     const since = new Date(container.clock.now().getTime() - days * DAY_MS);
+    if (projectId) await acl.assertProject(request, projectId);
+    const scope = await usageScope(request, projectId);
+    const visible = await acl.visibleProjects(request);
     const [summary, byDay, byModel, byProject] = await Promise.all([
-      admin.stats.summary(since, projectId),
-      admin.stats.byDay(since, projectId),
-      admin.stats.byModel(since, projectId),
-      projectId ? Promise.resolve([]) : admin.stats.byProject(since),
+      admin.stats.summary(since, scope),
+      admin.stats.byDay(since, scope),
+      admin.stats.byModel(since, scope),
+      projectId ? Promise.resolve([]) : admin.stats.byProject(since).then((rows) => (visible === null ? rows : rows.filter((r) => r.projectId !== null && visible.has(r.projectId)))),
     ]);
     return { since, summary, byDay, byModel, byProject };
   });
@@ -542,19 +611,34 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     const query = z
       .object({ projectId: z.string().optional(), runId: z.string().optional(), afterId: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) })
       .parse(request.query);
+    let projectId = query.projectId;
+    if (query.runId) {
+      const run = await repos.runs.get(query.runId);
+      if (!run || (projectId && run.projectId !== projectId)) return { events: [] };
+      projectId = run.projectId;
+    }
+    const ascending = query.afterId !== undefined;
     return {
-      events: await repos.events.list({
-        ...(query.projectId ? { projectId: query.projectId } : {}),
-        ...(query.runId ? { runId: query.runId } : {}),
-        ...(query.afterId !== undefined ? { afterId: query.afterId, order: 'asc' as const } : { order: 'desc' as const }),
-        limit: query.limit,
-      }),
+      events: await acl.scopedList(
+        request,
+        projectId,
+        (scopedProjectId) =>
+          repos.events.list({
+            ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
+            ...(query.runId ? { runId: query.runId } : {}),
+            ...(ascending ? { afterId: query.afterId, order: 'asc' as const } : { order: 'desc' as const }),
+            limit: query.limit,
+          }),
+        { limit: query.limit, sortKey: (e) => Number(e.id), order: ascending ? 'asc' : 'desc' },
+      ),
     };
   });
 
   app.get('/api/events/stream', viewer, async (request, reply) => {
     const { projectId } = z.object({ projectId: z.string().optional() }).parse(request.query);
     const lastEventId = Number(request.headers['last-event-id']);
+    if (projectId) await acl.assertProject(request, projectId);
+    let visible = await acl.visibleProjects(request);
 
     reply.hijack();
     const raw = reply.raw;
@@ -566,15 +650,30 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
       'x-content-type-options': 'nosniff',
     });
     const send = (event: AnyDomainEvent): void => {
+      if (!eventVisible(visible, event)) return;
       raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     };
     raw.write('retry: 3000\n\n');
 
     if (Number.isFinite(lastEventId)) {
-      for (const event of await repos.events.list({ afterId: lastEventId, ...(projectId ? { projectId } : {}), order: 'asc', limit: 500 })) send(event);
+      const missed = await acl.scopedList(request, projectId, (scoped) => repos.events.list({ afterId: lastEventId, ...(scoped ? { projectId: scoped } : {}), order: 'asc', limit: 500 }), {
+        limit: 500,
+        sortKey: (e) => Number(e.id),
+        order: 'asc',
+      });
+      for (const event of missed) send(event);
     }
     const unsubscribe = container.bus.subscribe(send, projectId ? { projectId } : {});
-    const heartbeat = setInterval(() => raw.write(': keep-alive\n\n'), 25_000);
+    const heartbeat = setInterval(() => {
+      raw.write(': keep-alive\n\n');
+      // Membership changes apply to open streams within one heartbeat.
+      void acl
+        .visibleProjects(request, { fresh: true })
+        .then((next) => {
+          visible = next;
+        })
+        .catch(() => {});
+    }, 25_000);
     request.raw.on('close', () => {
       clearInterval(heartbeat);
       unsubscribe();
