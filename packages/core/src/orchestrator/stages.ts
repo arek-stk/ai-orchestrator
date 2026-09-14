@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { dependencyApprovalDetails, dependencyApprovalGrant, describeDependencyFindings, detectDependencyAdditions } from '../approval/dependencies';
 import { detectGatedActions, requiresApproval } from '../approval/policy';
 import { runCouncil } from '../agents/council';
 import { AGENT_DEFINITIONS, type AgentInput } from '../agents/definitions';
@@ -15,7 +16,7 @@ import {
 import { buildContext, rankFiles, type ContextFile, type IndexedFile } from '../context/context-builder';
 import { summarizeFiles } from '../context/file-summarizer';
 import { parallelLayers } from '../dag/dag';
-import type { AgentRole, RunStage } from '../domain/enums';
+import type { AgentRole, Risk, RunStage } from '../domain/enums';
 import type { GatedAction, Project } from '../domain/project';
 import type { ApprovalAction } from '../domain/records';
 import type { PipelineRun } from '../domain/run';
@@ -126,14 +127,14 @@ export function onAgentFailure(ctx: StageContext, failure: AgentFailure<unknown>
   }
 }
 
-export async function requestApproval(ctx: StageContext, action: ApprovalAction, reason: string, details: Record<string, unknown>): Promise<StageOutcome> {
+export async function requestApproval(ctx: StageContext, action: ApprovalAction, reason: string, details: Record<string, unknown>, risk?: Risk): Promise<StageOutcome> {
   const approval = await ctx.deps.approvals.create({
     projectId: ctx.project.id,
     taskId: ctx.task.id,
     runId: ctx.run.id,
     action,
     reason,
-    risk: ctx.task.risk === 'low' ? 'medium' : ctx.task.risk,
+    risk: risk ?? (ctx.task.risk === 'low' ? 'medium' : ctx.task.risk),
     details,
   });
   await ctx.deps.events.emit({
@@ -144,6 +145,25 @@ export async function requestApproval(ctx: StageContext, action: ApprovalAction,
     payload: { approvalId: approval.id, action, risk: approval.risk, reason },
   });
   return { kind: 'wait', summary: `Waiting for human approval: ${action}`, resumeAt: null, approvalId: approval.id };
+}
+
+/**
+ * ADR-031: every new dependency waits for a human, at every autonomy level and whatever the gate configuration says.
+ * An approval covers exactly the set of additions it was requested for (fingerprint); anything added later needs a
+ * new approval. Grants live in the run checkpoint, so they are never reused by another run or task.
+ */
+export async function dependencyGate(ctx: StageContext): Promise<StageOutcome | null> {
+  const { project, run } = ctx;
+  if (run.checkpoint.changeset.length === 0) return null;
+  const repo = project.repo;
+  const ref = run.checkpoint.baseSha ?? repo?.defaultBranch ?? null;
+  const detection = await detectDependencyAdditions(run.checkpoint.changeset, (path) =>
+    repo && ref ? ctx.deps.github.getFileContent(repo, path, ref) : Promise.resolve(null),
+  );
+  if (!detection.fingerprint || run.checkpoint.approvedActions.includes(dependencyApprovalGrant(detection.fingerprint))) return null;
+  if (!requiresApproval({ action: 'dependency_addition', autonomyLevel: project.autonomyLevel, gates: project.settings.approvalGates })) return null;
+  const details = dependencyApprovalDetails(detection);
+  return requestApproval(ctx, 'dependency_addition', describeDependencyFindings(detection.findings), { ...details }, details.highRisk ? 'high' : undefined);
 }
 
 async function applyChanges(
@@ -535,6 +555,8 @@ export const implementStage: StageHandler = async (ctx) => {
   if (gate) {
     return requestApproval(ctx, gate.action, `${gate.reason}: ${gate.paths.slice(0, 5).join(', ')}`, { paths: gate.paths, allGates: pending.map((g) => g.action) });
   }
+  const dependencies = await dependencyGate(ctx);
+  if (dependencies) return dependencies;
   return passed(`${run.checkpoint.changeset.length} file(s) in the change set.`);
 };
 
@@ -575,6 +597,10 @@ export const testStage: StageHandler = async (ctx) => {
     };
     return passed(run.checkpoint.verification.summary);
   }
+
+  // The tester may have changed manifests; nothing unapproved reaches the sandbox install.
+  const dependencies = await dependencyGate(ctx);
+  if (dependencies) return dependencies;
 
   const result = await ctx.tools.invoke<SandboxRunResult>(
     'test.run',

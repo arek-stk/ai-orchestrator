@@ -2,6 +2,7 @@ import {
   defaultProjectProfile,
   defaultProjectSettings,
   emptyCheckpoint,
+  HARD_GATED_ACTIONS,
   type AgentRun,
   type Approval,
   type Decision,
@@ -46,7 +47,8 @@ export function toProject(row: ProjectRow): Project {
       ...row.settings,
       stopConditions: { ...settingsDefaults.stopConditions, ...row.settings.stopConditions },
       council: { ...settingsDefaults.council, ...row.settings.council },
-      approvalGates: { ...settingsDefaults.approvalGates, ...row.settings.approvalGates },
+      // Hard gates (ADR-031) stay enabled even if a stored configuration says otherwise.
+      approvalGates: { ...settingsDefaults.approvalGates, ...row.settings.approvalGates, ...Object.fromEntries(HARD_GATED_ACTIONS.map((action) => [action, true])) },
     },
     lastScheduledAt: row.lastScheduledAt,
     createdAt: row.createdAt,

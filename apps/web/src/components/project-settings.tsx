@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useApi } from '@/hooks/use-api';
 import { api, errorMessage } from '@/lib/api';
 import { humanize } from '@/lib/format';
-import { AGENT_ROLES, AUTONOMY_LABELS, GATED_ACTIONS, type AgentRole, type ModelsResponse, type Project, type ProjectSettings } from '@/lib/types';
+import { AGENT_ROLES, AUTONOMY_LABELS, GATED_ACTIONS, HARD_GATED_ACTIONS, type AgentRole, type ModelsResponse, type Project, type ProjectSettings } from '@/lib/types';
 import { hasRole, useSession } from './providers';
 import { Button, Card, ErrorBanner, Field, inputClass, textareaClass, Toggle } from './ui';
 
@@ -187,15 +187,20 @@ export function ProjectSettingsTab({ project, reload }: { project: Project; relo
 
         <Card title="Approval gates" description="Actions that pause the pipeline until a human approves.">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {GATED_ACTIONS.map((gate) => (
-              <Toggle
-                key={gate}
-                label={humanize(gate)}
-                disabled={disabled}
-                checked={settings.approvalGates[gate] ?? true}
-                onChange={(checked) => setSettings((s) => ({ ...s, approvalGates: { ...s.approvalGates, [gate]: checked } }))}
-              />
-            ))}
+            {GATED_ACTIONS.map((gate) => {
+              // Hard gates (ADR-031) are always on and cannot be changed here.
+              const hard = HARD_GATED_ACTIONS.includes(gate);
+              return (
+                <Toggle
+                  key={gate}
+                  label={humanize(gate)}
+                  disabled={disabled || hard}
+                  checked={hard ? true : (settings.approvalGates[gate] ?? true)}
+                  {...(hard ? { description: 'Always required for every new dependency' } : {})}
+                  onChange={(checked) => setSettings((s) => ({ ...s, approvalGates: { ...s.approvalGates, [gate]: checked } }))}
+                />
+              );
+            })}
           </div>
         </Card>
 

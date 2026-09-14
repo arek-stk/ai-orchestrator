@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defaultProjectProfile, defaultProjectSettings } from '../domain/project';
+import { createOrchestratorTools } from '../orchestrator/tools';
+import { unavailableSandbox } from '../sandbox/port';
+import { InMemoryGitHub } from '../testing/in-memory-github';
 import {
   guardNoSecrets,
   guardWritableBranch,
@@ -121,6 +124,40 @@ describe('ToolRouter', () => {
     // production_deploy gate is enabled by default even at level 4.
     await expect(router.invoke('deploy.run', {}, ctx)).rejects.toBeInstanceOf(ToolDeniedError);
     await expect(router.invoke('deploy.run', {}, { ...ctx, approvedActions: ['production_deploy'] })).resolves.toEqual({ deployed: true });
+  });
+
+  it('denies calls whose approval check finds an ungranted requirement, whatever the gate config (ADR-031)', async () => {
+    const router = new ToolRouter().register({
+      name: 'git.commit',
+      description: 'commit',
+      input: z.object({}),
+      minAutonomy: 0,
+      approvalCheck: async () => ({ action: 'dependency_addition', grant: 'dependency_addition:abc', detail: '1 new dependency needs human approval' }),
+      execute: async () => ({ sha: 'abc1234' }),
+    });
+    const base = context({ agentRole: 'orchestrator' });
+    const settings = defaultProjectSettings();
+    const everythingOff = Object.fromEntries(Object.keys(settings.approvalGates).map((k) => [k, false])) as typeof settings.approvalGates;
+    const ctx = { ...base, project: { ...base.project, autonomyLevel: 4 as const, settings: { ...settings, approvalGates: everythingOff } } };
+
+    await expect(router.invoke('git.commit', {}, ctx)).rejects.toMatchObject({ reason: 'approval_required', gatedAction: 'dependency_addition' });
+    // The plain action or another fingerprint does not cover the requirement.
+    await expect(router.invoke('git.commit', {}, { ...ctx, approvedActions: ['dependency_addition', 'dependency_addition:other'] })).rejects.toMatchObject({ reason: 'approval_required' });
+    await expect(router.invoke('git.commit', {}, { ...ctx, approvedActions: ['dependency_addition:abc'] })).resolves.toEqual({ sha: 'abc1234' });
+  });
+
+  it('never commits an unapproved new dependency through the orchestrator tools, but allows version bumps', async () => {
+    const github = new InMemoryGitHub();
+    const repo = { owner: 'acme', name: 'shop' };
+    const parentSha = github.seed(repo, { 'package.json': JSON.stringify({ dependencies: { express: '^4.18.0' } }) });
+    const tools = createOrchestratorTools({ github, sandbox: unavailableSandbox, sandboxTimeoutMs: 1_000 });
+    const changes = [{ path: 'package.json', action: 'update' as const, content: JSON.stringify({ dependencies: { express: '^4.19.0', 'left-pad': '1.3.0' } }) }];
+    const ctx = context({ agentRole: 'orchestrator', workspace: { apply: () => undefined, changes: () => changes } });
+    const args = { branch: 'orchestrator/tsk-1', parentSha, message: 'feat: x' };
+
+    await expect(tools.invoke('git.commit', args, ctx)).rejects.toMatchObject({ reason: 'approval_required', gatedAction: 'dependency_addition', detail: expect.stringContaining('left-pad@1.3.0 (npm)') });
+    changes[0] = { ...changes[0]!, content: JSON.stringify({ dependencies: { express: '^4.19.0' } }) };
+    await expect(tools.invoke('git.commit', args, ctx)).resolves.toMatchObject({ sha: expect.any(String) });
   });
 
   it('denies calls that exceed the budget headroom', async () => {

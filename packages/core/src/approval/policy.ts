@@ -1,5 +1,5 @@
 import type { AutonomyLevel } from '../domain/enums';
-import type { GatedAction } from '../domain/project';
+import { HARD_GATED_ACTIONS, type GatedAction } from '../domain/project';
 import { isSensitivePath, matchesAnyGlob } from '../security/paths';
 import { containsSecret } from '../security/secrets';
 
@@ -85,10 +85,15 @@ export interface ApprovalRequirementInput {
   gates: Readonly<Record<GatedAction, boolean>>;
 }
 
-/** Production deployments below level 4 always need a human, regardless of gate configuration. */
+/**
+ * Hard rules first: new dependencies always need a human, at every autonomy level and whatever the gate
+ * configuration says (ADR-031); production deployments below level 4 always need a human. Everything else follows
+ * the project's gate configuration, and a gate missing from it counts as enabled.
+ */
 export function requiresApproval(input: ApprovalRequirementInput): boolean {
+  if (HARD_GATED_ACTIONS.includes(input.action)) return true;
   if (input.action === 'production_deploy' && input.autonomyLevel < 4) return true;
-  return input.gates[input.action];
+  return input.gates[input.action] ?? true;
 }
 
 export function requiresCostApproval(estimatedCostUsd: number, thresholdUsd: number, gates: Readonly<Record<GatedAction, boolean>>): boolean {
