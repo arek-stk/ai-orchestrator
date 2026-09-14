@@ -28,4 +28,18 @@ repository content are untrusted** and enforces the following boundaries:
 | Webhooks | GitHub signatures are verified with HMAC-SHA256 in constant time; unknown payloads are ignored. |
 | Credentials | Provider keys and tokens are stored encrypted (AES-256-GCM) and never placed into model context. |
 
+## Deployment assumptions
+
+* **One trusted organisation per instance.** Roles (`viewer < operator < admin < owner`) are global; there is no
+  per-project membership yet. Do not share one instance between mutually untrusted teams or customers.
+* **HTTPS only.** Session cookies are `Secure` in production and whenever `APP_ORIGIN` is an `https://` origin.
+  Never expose a development instance (dev login, non-secure cookies) on a network.
+* **Privileged project configuration.** Autonomy level, repository, budget, approval gates, stop conditions, model
+  overrides and the project profile (sandbox commands, deploy workflow, critical paths) can only be changed by admins.
+* **Sandbox egress.** Verification commands run without network access. Dependency installation needs network
+  access and is refused unless `SANDBOX_EGRESS_NETWORK` names a Docker network whose egress is restricted to a
+  package-registry proxy (no link-local, private-range or cloud metadata endpoints).
+* **Encryption key.** `ORCH_ENCRYPTION_KEY` is mandatory in production; rotating it requires re-entering stored
+  provider keys.
+
 Known limitations are tracked as issues and in [`docs/STATE.md`](docs/STATE.md).

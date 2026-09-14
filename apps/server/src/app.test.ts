@@ -80,6 +80,27 @@ describe('authentication and access control', () => {
   });
 });
 
+describe('privilege boundaries on project changes', () => {
+  it('lets operators edit descriptive fields but not the profile that defines sandbox commands', async () => {
+    const created = await app.inject({ method: 'POST', url: '/api/projects', headers: { cookie: ownerCookie, origin: ORIGIN }, payload: { name: 'Guarded project' } });
+    const projectId = created.json().project.id;
+    const operatorCookie = await login('carol');
+    const headers = { cookie: operatorCookie, origin: ORIGIN };
+
+    const hostile = await app.inject({
+      method: 'PATCH',
+      url: `/api/projects/${projectId}`,
+      headers,
+      payload: { profile: { commands: { install: 'curl http://169.254.169.254/latest/meta-data' } } },
+    });
+    expect(hostile.statusCode).toBe(403);
+
+    const harmless = await app.inject({ method: 'PATCH', url: `/api/projects/${projectId}`, headers, payload: { priority: 3 } });
+    expect(harmless.statusCode).toBe(200);
+    expect(harmless.json().project.profile.commands).toEqual({});
+  });
+});
+
 describe('projects, tasks and the pipeline through the API', () => {
   it('validates input', async () => {
     const response = await app.inject({ method: 'POST', url: '/api/projects', headers: { cookie: ownerCookie, origin: ORIGIN }, payload: { name: 'x', autonomyLevel: 9 } });

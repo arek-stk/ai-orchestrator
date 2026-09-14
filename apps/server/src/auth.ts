@@ -36,7 +36,8 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  */
 export function registerAuth(app: FastifyInstance, container: Container): void {
   const { config, admin } = container;
-  const secureCookies = config.env === 'production';
+  // Secure cookies in production and whenever the app is served over HTTPS, whatever NODE_ENV says.
+  const secureCookies = config.env === 'production' || config.appOrigin.startsWith('https://');
 
   app.decorateRequest('user', null);
 

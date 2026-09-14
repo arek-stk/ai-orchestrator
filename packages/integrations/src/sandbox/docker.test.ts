@@ -113,6 +113,22 @@ describe('DockerSandbox', () => {
     expect(await readdir(workRoot)).toEqual([]);
   });
 
+  it('refuses network access for installs unless a restricted egress network is configured', async () => {
+    const installRequest = { ...request([{ name: 'install', command: 'npm ci' }]), network: 'registry' as const };
+
+    const offline = setup([{}]);
+    const refused = await (await DockerSandbox.detect({ github: offline.github, exec: offline.exec, workRoot: await tempDir() })).run(installRequest);
+    expect(refused.infrastructureError).toMatch(/SANDBOX_EGRESS_NETWORK/);
+    expect(offline.calls.filter((c) => c[0] === 'run')).toHaveLength(0);
+
+    const restricted = setup([{}]);
+    const sandbox = await DockerSandbox.detect({ github: restricted.github, exec: restricted.exec, workRoot: await tempDir(), egressNetwork: 'orch-egress' });
+    expect((await sandbox.run(installRequest)).passed).toBe(true);
+    const args = restricted.calls.find((c) => c[0] === 'run')!;
+    expect(args.slice(args.indexOf('--network'), args.indexOf('--network') + 2)).toEqual(['--network', 'orch-egress']);
+    expect(args).not.toContain('bridge');
+  });
+
   it('classifies docker failures as infrastructure errors', async () => {
     const s = setup([{ exitCode: 125, stderr: 'Unable to find image' }]);
     const sandbox = await DockerSandbox.detect({ github: s.github, exec: s.exec, workRoot: await tempDir() });

@@ -158,7 +158,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
 
   const github: GitHubPort = overrides.github ?? (config.github.token ? new OctokitGitHub({ token: config.github.token }) : createDemoGitHub());
   const githubKind: Container['githubKind'] = !overrides.github && config.github.token ? 'octokit' : 'in-memory';
-  const sandbox = overrides.sandbox ?? (config.sandbox === 'docker' ? await DockerSandbox.detect({ github }) : unavailableSandbox);
+  const sandbox = overrides.sandbox ?? (config.sandbox === 'docker' ? await DockerSandbox.detect({ github, egressNetwork: config.sandboxEgressNetwork }) : unavailableSandbox);
 
   const runtime = new AgentRuntime({
     models: effectiveModels,
