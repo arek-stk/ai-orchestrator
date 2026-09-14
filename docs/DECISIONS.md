@@ -129,6 +129,15 @@ Format: context → decision → consequences → status.
     pass an allow-list, jobs run with minimal permissions and skip when the secret is absent.
 * **Consequences:** Every change lands through a pull request with green CI; AI output is advisory and never gates or
   merges anything.
+* **Addendum — Repo Guardian (2026-09-14):** the owner asked for a bot that continuously checks that everything in the
+  repository is in order. `.github/workflows/repo-guardian.yml` runs every 6 hours, on demand, after CI on `main` and
+  on docs pushes. It is deterministic (no model), uses only official `actions/*` pinned to SHAs, reads with minimal job
+  permissions and writes only one issue ("Repo Guardian report", label `repo-guardian`) that it updates in place,
+  closes when all checks are ok and reopens otherwise; it comments only when a check newly becomes critical. Scorecard
+  findings are posture recommendations and never exceed warning. Untrusted text is escaped before rendering. APIs the
+  `GITHUB_TOKEN` cannot read (secret scanning alerts, full branch protection) use an optional fine-grained
+  `REPO_GUARDIAN_TOKEN` (read-only "Secret scanning alerts" and "Administration") or are reported as "not checked".
+  Like the AI workflows, the guardian is advisory: it reports and never merges, reverts or changes settings.
 * **Status:** Accepted (2026-09-14)
 
 ## ADR-020 — Production build: esbuild bundle, container image and compose stack
