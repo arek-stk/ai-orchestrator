@@ -107,7 +107,11 @@ export type HealthScanPatch = Partial<
 >;
 
 export interface HealthScanRepository {
-  create(input: { projectId: string; trigger: HealthScanTrigger; requestedBy: string | null }): Promise<HealthScan>;
+  /**
+   * Creates a queued scan unless the project already has a queued or running one, which is then returned with
+   * `created: false`. Must be atomic: concurrent calls for one project create at most one active scan.
+   */
+  create(input: { projectId: string; trigger: HealthScanTrigger; requestedBy: string | null }): Promise<{ scan: HealthScan; created: boolean }>;
   get(id: string): Promise<HealthScan | null>;
   list(projectId: string, limit?: number): Promise<HealthScan[]>;
   /** A queued or running scan of the project, if any. */

@@ -540,7 +540,14 @@ export const healthScans = pgTable(
     startedAt: ts('started_at'),
     finishedAt: ts('finished_at'),
   },
-  (t) => [index('health_scans_project_created_idx').on(t.projectId, t.createdAt), index('health_scans_status_idx').on(t.status)],
+  (t) => [
+    index('health_scans_project_created_idx').on(t.projectId, t.createdAt),
+    index('health_scans_status_idx').on(t.status),
+    // At most one queued or running scan per project, so concurrent requests cannot create an orphaned scan.
+    uniqueIndex('health_scans_project_active_uq')
+      .on(t.projectId)
+      .where(sql`status in ('queued', 'running')`),
+  ],
 );
 
 export const improvementProposals = pgTable(

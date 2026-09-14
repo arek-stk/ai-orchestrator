@@ -1,5 +1,5 @@
 {
-  "id": "93cccfac-fcb5-432a-bd5b-f93ad3595dfb",
+  "id": "c6b8b749-68c2-477f-8f7d-256046e83bc5",
   "prevId": "72e40792-ad76-4c1a-9ec0-cc9bd8809bda",
   "version": "7",
   "dialect": "postgresql",
@@ -1242,6 +1242,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "health_scans_project_active_uq": {
+          "name": "health_scans_project_active_uq",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status in ('queued', 'running')",
           "concurrently": false,
           "method": "btree",
           "with": {}

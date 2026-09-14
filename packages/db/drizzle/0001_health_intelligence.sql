@@ -59,5 +59,6 @@ ALTER TABLE "improvement_proposals" ADD CONSTRAINT "improvement_proposals_scan_i
 ALTER TABLE "improvement_proposals" ADD CONSTRAINT "improvement_proposals_task_id_tasks_id_fk" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "health_scans_project_created_idx" ON "health_scans" USING btree ("project_id","created_at");--> statement-breakpoint
 CREATE INDEX "health_scans_status_idx" ON "health_scans" USING btree ("status");--> statement-breakpoint
+CREATE UNIQUE INDEX "health_scans_project_active_uq" ON "health_scans" USING btree ("project_id") WHERE status in ('queued', 'running');--> statement-breakpoint
 CREATE UNIQUE INDEX "improvement_proposals_project_fingerprint_uq" ON "improvement_proposals" USING btree ("project_id","fingerprint");--> statement-breakpoint
 CREATE INDEX "improvement_proposals_project_status_idx" ON "improvement_proposals" USING btree ("project_id","status","priority");

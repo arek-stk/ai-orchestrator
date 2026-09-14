@@ -100,9 +100,9 @@ export class HealthScanner {
 
   /** Queues a scan unless one is already queued or running for the project. */
   async request(projectId: string, trigger: HealthScanTrigger, requestedBy: string | null): Promise<{ scan: HealthScan; created: boolean }> {
-    const active = await this.deps.scans.findActive(projectId);
-    if (active) return { scan: active, created: false };
-    const scan = await this.deps.scans.create({ projectId, trigger, requestedBy });
+    // Atomic in the store: concurrent requests (API, scheduler) get the same active scan and only one job is queued.
+    const { scan, created } = await this.deps.scans.create({ projectId, trigger, requestedBy });
+    if (!created) return { scan, created: false };
     await this.deps.queue.enqueue({ type: HEALTH_SCAN_JOB, payload: { scanId: scan.id }, dedupeKey: `health-scan:${projectId}`, maxAttempts: 2 });
     await this.deps.events.emit({ type: 'project.health_scan.requested', projectId, taskId: null, runId: null, payload: { scanId: scan.id, trigger } });
     return { scan, created: true };

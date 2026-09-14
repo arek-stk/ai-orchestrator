@@ -125,6 +125,21 @@ describe('health scan API', () => {
     expect(costs.summary.cacheHits).toBeGreaterThanOrEqual(1);
   });
 
+  it('answers concurrent scan requests with a single queued scan', async () => {
+    const headers = { cookie: ownerCookie, origin: ORIGIN };
+    const responses = await Promise.all([1, 2, 3].map(() => app.inject({ method: 'POST', url: `/api/projects/${projectId}/health-scans`, headers })));
+    expect(responses.map((r) => r.statusCode)).toEqual([202, 202, 202]);
+    const bodies = responses.map((r) => r.json());
+    expect(bodies.filter((b) => b.created)).toHaveLength(1);
+    expect(new Set(bodies.map((b) => b.scan.id)).size).toBe(1);
+
+    const listed = (await app.inject({ url: `/api/projects/${projectId}/health-scans`, headers: { cookie: ownerCookie } })).json().scans;
+    expect(listed.filter((s: { status: string }) => s.status === 'queued')).toHaveLength(1);
+    await workers.drain();
+    const after = (await app.inject({ url: `/api/projects/${projectId}/health-scans`, headers: { cookie: ownerCookie } })).json().scans;
+    expect(after.filter((s: { status: string }) => s.status === 'queued' || s.status === 'running')).toHaveLength(0);
+  });
+
   it('runs explicitly requested research as a job and stores it as memory', async () => {
     const headers = { cookie: ownerCookie, origin: ORIGIN };
     const bad = await app.inject({ method: 'POST', url: `/api/projects/${projectId}/research`, headers, payload: { question: 'short' } });

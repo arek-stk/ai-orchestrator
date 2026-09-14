@@ -32,12 +32,20 @@ function toProposal(row: typeof t.improvementProposals.$inferSelect): Improvemen
 export class DrizzleHealthScanRepository implements HealthScanRepository {
   constructor(private readonly db: Db) {}
 
-  async create(input: { projectId: string; trigger: HealthScanTrigger; requestedBy: string | null }): Promise<HealthScan> {
-    const [row] = await this.db
-      .insert(t.healthScans)
-      .values({ id: newId('hsc'), projectId: input.projectId, trigger: input.trigger, requestedBy: input.requestedBy })
-      .returning();
-    return toScan(row!);
+  async create(input: { projectId: string; trigger: HealthScanTrigger; requestedBy: string | null }): Promise<{ scan: HealthScan; created: boolean }> {
+    // The partial unique index health_scans_project_active_uq makes this atomic across requests and processes.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const [row] = await this.db
+        .insert(t.healthScans)
+        .values({ id: newId('hsc'), projectId: input.projectId, trigger: input.trigger, requestedBy: input.requestedBy })
+        .onConflictDoNothing({ target: t.healthScans.projectId, where: sql`status in ('queued', 'running')` })
+        .returning();
+      if (row) return { scan: toScan(row), created: true };
+      const active = await this.findActive(input.projectId);
+      if (active) return { scan: active, created: false };
+      // The conflicting scan finished between the insert and the read; the next attempt can insert.
+    }
+    throw new Error(`could not create a health scan for project ${input.projectId}: active scans keep changing`);
   }
 
   async get(id: string): Promise<HealthScan | null> {

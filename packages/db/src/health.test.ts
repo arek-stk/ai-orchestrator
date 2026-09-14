@@ -61,7 +61,8 @@ function proposal(projectId: string, overrides: Partial<NewProposal> = {}): NewP
 describe('health scans', () => {
   it('tracks the active scan and completes it', async () => {
     const project = await makeProject('scan-a');
-    const scan = await health.healthScans.create({ projectId: project.id, trigger: 'manual', requestedBy: 'usr_1' });
+    const { scan, created } = await health.healthScans.create({ projectId: project.id, trigger: 'manual', requestedBy: 'usr_1' });
+    expect(created).toBe(true);
     expect(scan).toMatchObject({ status: 'queued', healthScore: null, breakdown: [] });
     expect((await health.healthScans.findActive(project.id))?.id).toBe(scan.id);
 
@@ -69,6 +70,22 @@ describe('health scans', () => {
     expect(done).toMatchObject({ status: 'completed', healthScore: 82 });
     expect(await health.healthScans.findActive(project.id)).toBeNull();
     expect(await health.healthScans.list(project.id)).toHaveLength(1);
+  });
+
+  it('allows only one active scan per project, even for concurrent creates', async () => {
+    const project = await makeProject('scan-race');
+    const input = { projectId: project.id, trigger: 'manual' as const, requestedBy: null };
+    const results = await Promise.all([health.healthScans.create(input), health.healthScans.create({ ...input, trigger: 'scheduled' }), health.healthScans.create(input)]);
+
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(new Set(results.map((r) => r.scan.id)).size).toBe(1);
+    expect(await health.healthScans.list(project.id)).toHaveLength(1);
+
+    // Once the active scan has finished, a new one can be created.
+    await health.healthScans.update(results[0]!.scan.id, { status: 'failed', finishedAt: new Date() });
+    const next = await health.healthScans.create(input);
+    expect(next.created).toBe(true);
+    expect(next.scan.id).not.toBe(results[0]!.scan.id);
   });
 });
 

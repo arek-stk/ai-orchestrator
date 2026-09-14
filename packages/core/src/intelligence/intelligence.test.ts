@@ -341,6 +341,20 @@ describe('HealthScanner', () => {
     expect(await h.scanner.dismiss(proposal!.id, actor, null)).toBeNull();
   });
 
+  it('creates one scan and one job for concurrent manual and scheduled requests', async () => {
+    const h = await harness({ level: 2 });
+    const results = await Promise.all([
+      h.scanner.request(h.project.id, 'manual', 'usr_1'),
+      h.scanner.request(h.project.id, 'manual', 'usr_2'),
+      h.scanner.scheduleDue(0).then(() => null),
+    ]);
+    const requests = results.filter((r): r is NonNullable<typeof r> => r !== null);
+    expect(new Set(requests.map((r) => r.scan.id)).size).toBe(1);
+    expect(await h.store.scans.list(h.project.id)).toHaveLength(1);
+    expect(h.store.queue.jobs.filter((j) => j.type === HEALTH_SCAN_JOB)).toHaveLength(1);
+    expect(h.store.events.log.filter((e) => e.type === 'project.health_scan.requested')).toHaveLength(1);
+  });
+
   it('queues scheduled scans only for due projects with a repository and autonomy level ≥ 1', async () => {
     const h = await harness({ level: 1 });
     expect(await h.scanner.scheduleDue(24 * 60 * 60 * 1000)).toBe(1);

@@ -358,6 +358,9 @@ export function createMemoryStore(clock: Clock = systemClock) {
   const scanList: HealthScan[] = [];
   const scans: HealthScanRepository = {
     create: async (input) => {
+      // Check and insert run in one synchronous section, mirroring the partial unique index of the Drizzle store.
+      const active = scanList.find((s) => s.projectId === input.projectId && (s.status === 'queued' || s.status === 'running'));
+      if (active) return { scan: clone(active), created: false };
       const scan: HealthScan = {
         id: id('hsc'),
         ...input,
@@ -378,7 +381,7 @@ export function createMemoryStore(clock: Clock = systemClock) {
         finishedAt: null,
       };
       scanList.push(scan);
-      return clone(scan);
+      return { scan: clone(scan), created: true };
     },
     get: async (scanId) => clone(scanList.find((s) => s.id === scanId) ?? null),
     list: async (projectId, limit = 20) => clone([...scanList].reverse().filter((s) => s.projectId === projectId).slice(0, limit)),
