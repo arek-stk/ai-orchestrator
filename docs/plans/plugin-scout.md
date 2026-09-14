@@ -364,8 +364,12 @@ like `octokit.ts:264-278`.
 4. No field from a catalog is ever used as a command, path, branch name or URL to fetch.
 
 ### 9.3 Approval gates
-* New gated action `dependency_addition` (default on). Detected from change sets; for developer/CI-environment plugin
-  kinds it is a hard rule (like `production_deploy` in `policy.ts:89-92`, but without a level exception).
+* New gated action `dependency_addition`, **decided by the owner (2026-09-14) as a hard rule for every dependency
+  addition**. It applies whatever proposes the change: Plugin Scout, the builder agent during a normal task, or the autopilot. It applies at
+  every autonomy level, with no level exception (unlike `production_deploy` in `policy.ts:89-92`), and it cannot be switched off in the gate config.
+  Detected from change sets: new entries in dependency manifests and lockfile-only additions, workflow `uses:`, `.mcp.json`,
+  `.claude/settings.json`, `.vscode/extensions.json`. Version bumps of existing dependencies stay with the existing
+  Dependabot/review flow.
 * Plugin Scout never auto-accepts, deliberately deviating from ADR-013's auto-acceptance at level ≥ 3.
 * Enabling `externalLookups` is an admin settings change → audited; treated as the `external_service` decision for the project.
 
@@ -420,7 +424,8 @@ download patterns (`curl | sh`), and exfiltration endpoints. Result = flags only
 >     truncated, delimited, never executed.
 >   * Output is recommendations only. Nothing is installed or enabled automatically at any autonomy level; there is no
 >     auto-acceptance (explicit exception to ADR-013). Accepting creates a normal task; the resulting change set hits a
->     new `dependency_addition` gate, which is mandatory for plugins that execute in developer or CI environments.
+>     new `dependency_addition` gate. Per the owner's decision, this gate requires human approval for **every** new
+>     dependency, whatever its source (scout, builder agent, autopilot), at every autonomy level.
 >     Trials run only in the Docker sandbox with registry-proxy egress, install scripts disabled and no secrets.
 >   * Decisions are remembered per project by plugin fingerprint; dismissed items do not resurface except by explicit
 >     snooze or a documented risk re-evaluation rule. Per-project allow/deny lists and license policy apply.
@@ -494,8 +499,9 @@ with recorded, trimmed API fixtures — no live network in CI.
 
 1. **ADR number collision:** ADR-013…016 (PR #12) and ADR-020…024 were numbered in parallel; the multi-account AI
    research (`docs/research/multi-account-ai.md`) may also claim ADR-031. Reserve numbers in `docs/DECISIONS.md` before merging.
-2. **Scope of `dependency_addition` detection:** it would also gate the builder agent adding dependencies during normal
-   tasks (good against slopsquatting, but more approvals). Hard rule for all kinds, or only for dev-environment kinds?
+2. ~~**Scope of `dependency_addition` detection**~~ — **decided (owner, 2026-09-14):** hard rule for all new
+   dependencies from any source (scout, builder agent in normal tasks, autopilot) at every autonomy level; see §9.3.
+   It is built as a small security change right after PR #12, before the Plugin Scout itself.
 3. **Socket.dev:** worth a paid token? Pricing/quotas unverified; without it, behavioural signals (install scripts,
    network access) are limited to manifest inspection.
 4. **Sigstore verification:** record provenance presence and repo match only (v1), or verify bundles in-process

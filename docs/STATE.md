@@ -34,6 +34,11 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 ## Roadmap (approved order)
 Plans are proposals until built; risky or irreversible actions always stay with a human.
 
+Decided by the owner (2026-09-14): **every new dependency needs human approval**, whatever proposes it (Plugin
+Scout, builder agent in a normal task, autopilot) and at every autonomy level. This covers package manifests,
+workflow `uses:`, MCP/Claude/editor configs. It will be the `dependency_addition` approval gate in
+`docs/plans/plugin-scout.md` and is built as a small security change right after PR #12.
+
 1. **Health scan, agent output cache, specialist agents**: PR #12, merge after the concurrent-scan fix.
 2. **Project Room + MCP server, leases, Kanban, milestones, roadmap**: ADR-030, `docs/plans/project-room.md`.
 3. **Autopilot / away mode**: time- and budget-boxed unattended work. Questions are resolved via decision memory, then research, then an agent council with a critic on a different model; anything risky is parked for the human; there is a return digest. See `docs/plans/autopilot.md`.
