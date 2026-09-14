@@ -24,6 +24,8 @@ export interface AgentRun {
   error: string | null;
   startedAt: Date;
   finishedAt: Date | null;
+  /** Served from the agent output cache. */
+  cacheHit?: boolean;
 }
 
 export interface AgentRunResult {
@@ -38,6 +40,8 @@ export interface AgentRunResult {
   modelConfigId: string | null;
   provider: string | null;
   modelId: string | null;
+  /** The output was served from the agent output cache (no model call). */
+  cacheHit?: boolean;
 }
 
 export interface DecisionOption {
@@ -119,4 +123,7 @@ export interface UsageEntry {
   modelId: string;
   usage: TokenUsage;
   costUsd: number;
+  /** Cache hit: costUsd is 0 and savedUsd is the cost of the original call. */
+  cacheHit?: boolean;
+  savedUsd?: number;
 }

@@ -25,7 +25,10 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | 14 | Deployment (ADR-020): esbuild bundle with migrations, multi-stage Dockerfile (non-root, healthcheck), docker compose with PostgreSQL, CI image build on PRs | ✅ done | bundle started locally against PGlite; `docker compose config` valid; image build runs in CI (no local Docker daemon) |
 | 15 | Observability (ADR-021): `/api/metrics` (Prometheus), request ids, log redaction, worker/HTTP counters | ✅ done | `metrics.test.ts` |
 | 16 | Multi-instance events (ADR-024): LISTEN/NOTIFY fan-out with dedupe, reconnect and gap replay | ✅ done | `event-fanout.test.ts` with fakes; not yet exercised against a real PostgreSQL |
-| 13 | Optimisation: caching, decision reuse | ⏳ | — |
+| 13 | Optimisation: caching, decision reuse | 🚧 in progress | agent output cache + file summaries done (row 19) |
+| 17 | Autonomous product improvement (ADR-013): Project Health Scan (deterministic signals + score, heuristic, scan-agent and DevOps proposals, ROI priority, fingerprint dedupe, guarded auto-acceptance into BACKLOG tasks, daily scheduling), migration `0001` (`health_scans`, `improvement_proposals`) | ✅ done | 13 core tests · 5 repository tests · 5 API tests |
+| 18 | Specialists (ADR-015): documentation agent + `docs.write` for docs tasks, release readiness gate before DEPLOY, DevOps review in scans, research on explicit request | ✅ done | verify-check tests · 5 pipeline scenarios |
+| 19 | Caching (ADR-014): TTL agent output cache in `cache_entries` (hard deny-list for code-changing agents, savings in usage ledger and cost stats), sha-keyed file summaries used by the context builder | ✅ done | 4 cache tests · summarizer and repository tests |
 
 ## Known constraints on the dev machine
 * Docker daemon not running → sandbox defaults to `SANDBOX=none` (verification delegated to CI).

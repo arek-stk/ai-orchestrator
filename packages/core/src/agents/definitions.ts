@@ -4,7 +4,7 @@ import type { AgentRole } from '../domain/enums';
 import type { Task } from '../domain/task';
 import type { ContextFile } from '../context/context-builder';
 import type { ReasoningEffort } from '../models/provider';
-import { normalizeRepoPath, UnsafePathError } from '../security/paths';
+import { isDocumentationPath, normalizeRepoPath, UnsafePathError } from '../security/paths';
 import { redactSecrets } from '../security/secrets';
 import { DEFAULT_TOOL_PERMISSIONS, type ToolName } from '../tools/tool-router';
 import {
@@ -13,7 +13,13 @@ import {
   BuildOutputSchema,
   DebugOutputSchema,
   DesignOpinionSchema,
+  DevOpsOutputSchema,
+  DocumentationOutputSchema,
+  FileSummaryOutputSchema,
+  HealthScanOutputSchema,
   PlanOutputSchema,
+  ReleaseReadinessOutputSchema,
+  ResearchOutputSchema,
   ReviewOutputSchema,
   SecurityOutputSchema,
   SynthesisOutputSchema,
@@ -21,8 +27,15 @@ import {
   type BuildOutput,
   type DebugOutput,
   type DesignOpinion,
+  type DevOpsOutput,
+  type DocumentationOutput,
   type FileChangeOutput,
+  type FileSummaryOutput,
+  type HealthScanOutput,
   type PlanOutput,
+  type ProposalItem,
+  type ReleaseReadinessOutput,
+  type ResearchOutput,
   type ReviewOutput,
   type SecurityOutput,
   type TestOutput,
@@ -38,7 +51,13 @@ export type AgentKey =
   | 'review'
   | 'security_audit'
   | 'synthesize'
-  | 'blocker_analysis';
+  | 'blocker_analysis'
+  | 'health_scan'
+  | 'devops_review'
+  | 'file_summary'
+  | 'research'
+  | 'documentation'
+  | 'release_readiness';
 
 export interface AgentDefinition<S extends z.ZodType = z.ZodType> {
   key: AgentKey;
@@ -51,6 +70,11 @@ export interface AgentDefinition<S extends z.ZodType = z.ZodType> {
   expectedOutputTokens: number;
   effort: ReasoningEffort;
   tools: readonly ToolName[];
+  /**
+   * Opt-in output cache TTL (spec §31) for deterministic, side-effect-free agents. Ignored for keys in
+   * NON_CACHEABLE_AGENT_KEYS (build, debug, review, ...), whatever is configured here.
+   */
+  cacheTtlMs?: number;
   /** Deterministic checks beyond the schema; returns issues (empty = valid). */
   verify?(output: z.infer<S>): string[];
 }
@@ -164,6 +188,73 @@ function verifySecurity(output: SecurityOutput): string[] {
   return blocking && output.verdict === 'pass' ? ['security passes despite high/critical findings'] : [];
 }
 
+function verifyProposalItems(items: readonly ProposalItem[], label: string): string[] {
+  const issues: string[] = [];
+  const keys = new Set<string>();
+  for (const item of items) {
+    if (keys.has(item.key)) issues.push(`${label}: duplicate key ${item.key}`);
+    keys.add(item.key);
+    if (item.title.trim().length < 3) issues.push(`${label} ${item.key}: title too short`);
+    // Proposals must be grounded in the provided signals, never invented.
+    if (item.evidence.length === 0) issues.push(`${label} ${item.key}: no evidence`);
+    if (item.acceptanceCriteria.length === 0) issues.push(`${label} ${item.key}: no acceptance criteria`);
+    for (const path of item.affectedPaths) {
+      try {
+        normalizeRepoPath(path);
+      } catch (error) {
+        issues.push(`${label} ${item.key}: ${error instanceof UnsafePathError ? error.message : String(error)}`);
+      }
+    }
+  }
+  return issues;
+}
+
+function verifyHealthScan(output: HealthScanOutput): string[] {
+  return verifyProposalItems(output.proposals, 'proposal');
+}
+
+function verifyDevOps(output: DevOpsOutput): string[] {
+  return verifyProposalItems(output.suggestions, 'suggestion');
+}
+
+function verifyFileSummaries(output: FileSummaryOutput): string[] {
+  const issues: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of output.summaries) {
+    if (seen.has(entry.path)) issues.push(`duplicate summary for ${entry.path}`);
+    seen.add(entry.path);
+    if (entry.summary.trim().length < 10) issues.push(`summary for ${entry.path} is empty`);
+  }
+  return issues;
+}
+
+function verifyResearch(output: ResearchOutput): string[] {
+  const issues: string[] = [];
+  if (output.recommendation.trim().length === 0) issues.push('research without a recommendation');
+  if (output.findings.length === 0 && output.limitations.length === 0) issues.push('research has neither findings nor stated limitations');
+  if (output.findings.some((f) => f.claim.trim().length === 0)) issues.push('research contains an empty finding');
+  return issues;
+}
+
+function verifyDocumentation(output: DocumentationOutput): string[] {
+  if (output.changes.length === 0) return ['documentation produced no changes'];
+  const issues = verifyChanges(output.changes, 'docs');
+  for (const change of output.changes) {
+    if (!isDocumentationPath(change.path.replace(/\\/g, '/'))) issues.push(`docs: ${change.path} is not a documentation file`);
+  }
+  return issues;
+}
+
+function verifyReleaseReadiness(output: ReleaseReadinessOutput): string[] {
+  const issues: string[] = [];
+  const names = output.checks.map((c) => c.name);
+  if (new Set(names).size !== names.length) issues.push('duplicate release check');
+  const failed = output.checks.filter((c) => c.status === 'fail');
+  if (output.verdict === 'ready' && (failed.length > 0 || output.blockers.length > 0)) issues.push('release is ready despite failing checks or blockers');
+  if (output.verdict === 'not_ready' && output.blockers.length === 0) issues.push('release is not ready without naming blockers');
+  return issues;
+}
+
 // ---------------------------------------------------------------------------
 // Definitions
 // ---------------------------------------------------------------------------
@@ -193,6 +284,7 @@ export const AGENT_DEFINITIONS = {
     expectedOutputTokens: 3_000,
     effort: 'low',
     tools: DEFAULT_TOOL_PERMISSIONS.project_analyst,
+    cacheTtlMs: 24 * 60 * 60 * 1000,
   },
   plan: {
     key: 'plan',
@@ -326,6 +418,99 @@ export const AGENT_DEFINITIONS = {
     expectedOutputTokens: 2_000,
     effort: 'medium',
     tools: [],
+  },
+  health_scan: {
+    key: 'health_scan',
+    role: 'project_analyst',
+    name: 'Project Health Scanner',
+    schemaName: 'health_scan_output',
+    schema: HealthScanOutputSchema,
+    systemPrompt: prompt(
+      'Project Health Scanner',
+      'Deterministic signals about the project (repository index, dependency manifests, failure memory, run outcomes, blocked tasks) and heuristic findings are provided. Propose concrete improvements the heuristics missed or describe better: technical debt, missing tests, outdated or unsafe dependencies, security risks, performance, UX and documentation. Every proposal needs evidence taken from the provided signals and checkable acceptance criteria. Estimate impact, effort and risk honestly; prefer small, low-risk improvements. Do not repeat heuristic findings and do not invent files that are not listed.',
+    ),
+    expectedOutputTokens: 4_000,
+    effort: 'medium',
+    tools: ['repository.read', 'repository.search'],
+    cacheTtlMs: 12 * 60 * 60 * 1000,
+    verify: verifyHealthScan,
+  },
+  devops_review: {
+    key: 'devops_review',
+    role: 'devops',
+    name: 'DevOps Agent',
+    schemaName: 'devops_output',
+    schema: DevOpsOutputSchema,
+    systemPrompt: prompt(
+      'DevOps Agent',
+      'Review the CI workflows, container files and deployment configuration named in the input. Suggest improvements for build speed, reliability, caching, security hardening (pinned actions, least-privilege tokens, non-root containers) and observability. Suggestions are proposals for humans and the orchestrator; they are never applied directly. Tie every suggestion to evidence from the input.',
+    ),
+    expectedOutputTokens: 3_000,
+    effort: 'medium',
+    tools: ['repository.read', 'repository.search', 'ci.status'],
+    cacheTtlMs: 12 * 60 * 60 * 1000,
+    verify: verifyDevOps,
+  },
+  file_summary: {
+    key: 'file_summary',
+    role: 'project_analyst',
+    name: 'File Summarizer',
+    schemaName: 'file_summary_output',
+    schema: FileSummaryOutputSchema,
+    systemPrompt: prompt(
+      'File Summarizer',
+      'Summarise each provided file in at most three sentences: its responsibility, the main exported symbols and notable dependencies. Summaries replace the full file in later prompts, so name what a developer would search for. Return exactly one summary per provided file path.',
+    ),
+    expectedOutputTokens: 2_000,
+    effort: 'low',
+    tools: ['repository.read'],
+    cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
+    verify: verifyFileSummaries,
+  },
+  research: {
+    key: 'research',
+    role: 'researcher',
+    name: 'Research Agent',
+    schemaName: 'research_output',
+    schema: ResearchOutputSchema,
+    systemPrompt: prompt(
+      'Research Agent',
+      'Answer the research question from the provided project context and memory. Separate established facts from assumptions, cite the source of each finding (a file path, memory entry or well-known public documentation) and state limitations, especially where current external information would be needed. End with a recommendation the orchestrator can act on.',
+    ),
+    expectedOutputTokens: 3_000,
+    effort: 'high',
+    tools: [],
+    verify: verifyResearch,
+  },
+  documentation: {
+    key: 'documentation',
+    role: 'documentation',
+    name: 'Documentation Agent',
+    schemaName: 'documentation_output',
+    schema: DocumentationOutputSchema,
+    systemPrompt: prompt(
+      'Documentation Agent',
+      'Update documentation for the task: README sections, changelog entries, API documentation and guides. Return full file contents for every created or updated file. Only documentation files may be changed (Markdown, reStructuredText, docs folders, OpenAPI descriptions); never change source code. Keep the existing tone and structure and describe only behaviour that exists in the provided context.',
+    ),
+    expectedOutputTokens: 12_000,
+    effort: 'low',
+    tools: ['repository.read', 'repository.search', 'docs.write'],
+    verify: verifyDocumentation,
+  },
+  release_readiness: {
+    key: 'release_readiness',
+    role: 'release',
+    name: 'Release Readiness Agent',
+    schemaName: 'release_readiness_output',
+    schema: ReleaseReadinessOutputSchema,
+    systemPrompt: prompt(
+      'Release Readiness Agent',
+      'Decide whether the change is ready for production deployment. Evaluate tests, security audit, database migrations (reversibility, destructive statements), changelog and version bump, and CI status from the provided evidence. Deterministic check results are authoritative; add what they cannot see. The verdict is not_ready when any check fails, and every blocker must be named.',
+    ),
+    expectedOutputTokens: 2_500,
+    effort: 'medium',
+    tools: ['repository.read', 'ci.status', 'github.pr.read'],
+    verify: verifyReleaseReadiness,
   },
 } as const satisfies Record<AgentKey, AgentDefinition>;
 

@@ -330,6 +330,7 @@ export class DrizzleAgentRunRepository implements AgentRunRepository {
         toolsUsed: result.toolsUsed,
         durationMs: Math.round(result.durationMs),
         error: result.error,
+        cacheHit: result.cacheHit ?? false,
         modelConfigId: result.modelConfigId,
         provider: result.provider,
         modelId: result.modelId,
@@ -518,6 +519,8 @@ export class DrizzleUsageRepository implements UsageRepository {
       cacheReadTokens: entry.usage.cacheReadTokens,
       cacheWriteTokens: entry.usage.cacheWriteTokens,
       costUsd: entry.costUsd,
+      cacheHit: entry.cacheHit ?? false,
+      savedUsd: entry.savedUsd ?? 0,
     });
   }
 

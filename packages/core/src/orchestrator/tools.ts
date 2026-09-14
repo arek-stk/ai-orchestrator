@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { PROJECT_COMMANDS } from '../domain/project';
 import type { GitHubPort, PullRequestRef, RepoCoordinates } from '../github/port';
 import type { SandboxPort } from '../sandbox/port';
+import { isDocumentationPath } from '../security/paths';
 import {
   guardNoSecrets,
   guardWritableBranch,
@@ -58,6 +59,33 @@ export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter 
       execute: async (args, ctx) => {
         const path = guardWritablePath(args.path, ctx);
         workspaceOf(ctx, 'repository.write').apply({
+          path,
+          action: args.action,
+          ...(args.action !== 'delete' && args.content ? { content: args.content } : {}),
+          ...(args.rationale ? { rationale: args.rationale } : {}),
+        });
+        return { path };
+      },
+    })
+    .register({
+      name: 'docs.write',
+      description: 'Stage a documentation file change (Markdown, docs folders, API descriptions) in the run workspace',
+      input: z.object({
+        path: z.string().min(1).max(500),
+        action: z.enum(['create', 'update', 'delete']),
+        content: z.string().max(400_000).nullable().optional(),
+        rationale: z.string().max(1000).optional(),
+      }),
+      minAutonomy: 2,
+      guard: (args, ctx) => {
+        const path = guardWritablePath(args.path, ctx, 'docs.write');
+        if (!isDocumentationPath(path)) throw new ToolDeniedError('docs.write', 'security', `${path} is not a documentation file`);
+        if (args.action !== 'delete' && !args.content) throw new ToolDeniedError('docs.write', 'invalid_input', `${path}: content required`);
+        if (args.content) guardNoSecrets(args.content, 'docs.write');
+      },
+      execute: async (args, ctx) => {
+        const path = guardWritablePath(args.path, ctx, 'docs.write');
+        workspaceOf(ctx, 'docs.write').apply({
           path,
           action: args.action,
           ...(args.action !== 'delete' && args.content ? { content: args.content } : {}),

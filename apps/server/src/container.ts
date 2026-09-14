@@ -24,6 +24,7 @@ import {
 import {
   createAdminRepositories,
   createDatabase,
+  createHealthRepositories,
   createRepositories,
   PgJobQueue,
   type AdminRepositories,
@@ -35,6 +36,7 @@ import { createDemoResponders, DefaultProviderResolver, DockerSandbox, OctokitGi
 import type { ServerConfig } from './config';
 import { decryptSecret } from './crypto';
 import { EventRelay, LocalEventFanout, PgNotifyEventFanout, type EventFanout } from './event-fanout';
+import { createIntelligence, type Intelligence } from './intelligence';
 import { createServerMetrics, type ServerMetrics } from './metrics';
 import { createDemoGitHub } from './seed';
 
@@ -57,6 +59,8 @@ export interface Container {
   providers: DefaultProviderResolver;
   runtime: AgentRuntime;
   orchestrator: Orchestrator;
+  /** Health scans, improvement proposals, research and agent cache maintenance. */
+  intelligence: Intelligence;
   github: GitHubPort;
   githubKind: 'octokit' | 'in-memory';
   sandbox: SandboxPort;
@@ -147,6 +151,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
 
   const repos = createRepositories(db.db);
   const admin = createAdminRepositories(db.db);
+  const health = createHealthRepositories(db.db);
   await admin.models.seedDefaults(DEFAULT_MODEL_CONFIGS);
 
   const metrics = createServerMetrics();
@@ -219,8 +224,10 @@ export async function createContainer(config: ServerConfig, overrides: Container
     },
     globalRoleOverrides: () => settings.modelOverrides,
     clock,
+    cache: health.agentCache,
   });
 
+  const repoIndex = new RepoIndexer(github, admin.repoFiles);
   const orchestrator = new Orchestrator({
     ...repos,
     events,
@@ -229,8 +236,9 @@ export async function createContainer(config: ServerConfig, overrides: Container
     runtime,
     github,
     sandbox,
-    repoIndex: new RepoIndexer(github, admin.repoFiles),
+    repoIndex,
     repoFiles: admin.repoFiles,
+    fileSummaries: health.fileSummaries,
     toolAudit: (entry) =>
       admin.audit.record({
         actorType: 'agent',
@@ -243,6 +251,8 @@ export async function createContainer(config: ServerConfig, overrides: Container
       settings.globalDailyBudgetUsd > 0 && (await repos.usage.totalCostSince(startOfDay())) >= settings.globalDailyBudgetUsd,
     options: { globalCapacity: settings.globalCapacity },
   });
+
+  const intelligence = createIntelligence({ repos, admin, health, events, queue, clock, runtime, github, repoIndex });
 
   return {
     config,
@@ -257,6 +267,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
     providers,
     runtime,
     orchestrator,
+    intelligence,
     github,
     githubKind,
     sandbox,
