@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-export type IdPrefix = 'usr' | 'ses' | 'prj' | 'tsk' | 'run' | 'agr' | 'dec' | 'mem' | 'apr' | 'prv' | 'ci';
+export type IdPrefix = 'usr' | 'ses' | 'prj' | 'tsk' | 'run' | 'agr' | 'dec' | 'mem' | 'apr' | 'prv' | 'ci' | 'hsc' | 'imp';
 
 /** Time-sortable, URL-safe identifier: `<prefix>_<time base36><64 random bits hex>`. */
 export function newId(prefix: IdPrefix): string {

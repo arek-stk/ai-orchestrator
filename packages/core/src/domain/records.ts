@@ -24,6 +24,8 @@ export interface AgentRun {
   error: string | null;
   startedAt: Date;
   finishedAt: Date | null;
+  /** Served from the agent output cache. */
+  cacheHit?: boolean;
 }
 
 export interface AgentRunResult {
