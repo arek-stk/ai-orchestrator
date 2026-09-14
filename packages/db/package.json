@@ -1,0 +1,23 @@
+{
+  "name": "@orch/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@orch/core": "*",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.0",
+    "drizzle-kit": "^0.31.10"
+  }
+}
