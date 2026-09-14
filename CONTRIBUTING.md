@@ -32,6 +32,20 @@ npm test            # vitest, no database or Docker required (embedded PGlite, i
 * **Everything is bounded.** Loops need an explicit limit that ends in a blocked state with a reason.
 * **Model providers are adapters.** Use the provider's official SDK and verify API usage against its typings.
 
+## Commits and releases
+
+* Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages and PR titles:
+  `feat(core): …`, `fix(db): …`, `docs: …`, `ci: …`, `chore(deps): …`.
+* Releases are automated: release-please keeps a release PR with the next version and `CHANGELOG.md` up to date;
+  merging it publishes the GitHub release.
+
+## Automation
+
+* **CI** runs typecheck and tests on every pull request; it is required on `main`.
+* **CodeQL**, **dependency review** and **OpenSSF Scorecard** scan for vulnerabilities.
+* **Dependabot** opens grouped weekly updates; minor and patch updates auto-merge after CI passes.
+* **Labeler** labels pull requests by the areas they touch; **stale** closes inactive issues after 74 days.
+
 ## Code style
 
 * TypeScript strict mode, ESM, named exports.

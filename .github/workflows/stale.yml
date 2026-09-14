@@ -1,0 +1,30 @@
+name: Stale
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    name: Mark stale issues and pull requests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v11
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: pinned,security,roadmap
+          exempt-pr-labels: pinned,security
+          stale-issue-message: >
+            This issue has had no activity for 60 days and will be closed in 14 days.
+            Comment or add the `pinned` label to keep it open.
+          stale-pr-message: >
+            This pull request has had no activity for 60 days and will be closed in 14 days.
+            Push a commit or comment to keep it open.
