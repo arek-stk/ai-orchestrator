@@ -12,7 +12,8 @@ import {
   type FileChangeOutput,
   type PlanOutput,
 } from '../agents/schemas';
-import { buildContext, type ContextFile, type IndexedFile } from '../context/context-builder';
+import { buildContext, rankFiles, type ContextFile, type IndexedFile } from '../context/context-builder';
+import { summarizeFiles } from '../context/file-summarizer';
 import { parallelLayers } from '../dag/dag';
 import type { AgentRole, RunStage } from '../domain/enums';
 import type { GatedAction, Project } from '../domain/project';
@@ -87,7 +88,7 @@ export function workspaceFor(run: PipelineRun): ToolWorkspace {
   };
 }
 
-function baseInput(ctx: StageContext, sections: AgentInput['sections'], files: readonly ContextFile[] = [], question?: string): AgentInput {
+export function baseInput(ctx: StageContext, sections: AgentInput['sections'], files: readonly ContextFile[] = [], question?: string): AgentInput {
   return {
     project: { name: ctx.project.name, description: ctx.project.description, languages: ctx.project.profile.languages },
     task: ctx.task,
@@ -97,7 +98,7 @@ function baseInput(ctx: StageContext, sections: AgentInput['sections'], files: r
   };
 }
 
-function agentCommon(ctx: StageContext) {
+export function agentCommon(ctx: StageContext) {
   return {
     scope: { projectId: ctx.project.id, taskId: ctx.task.id, runId: ctx.run.id },
     complexity: ctx.task.estimatedComplexity,
@@ -107,12 +108,12 @@ function agentCommon(ctx: StageContext) {
   };
 }
 
-function track(ctx: StageContext, spend: { costUsd: number; usage: TokenUsage }): void {
+export function track(ctx: StageContext, spend: { costUsd: number; usage: TokenUsage }): void {
   ctx.run.costUsd += spend.costUsd;
   ctx.run.tokens += totalTokens(spend.usage);
 }
 
-function onAgentFailure(ctx: StageContext, failure: AgentFailure<unknown>): StageOutcome {
+export function onAgentFailure(ctx: StageContext, failure: AgentFailure<unknown>): StageOutcome {
   switch (failure.kind) {
     case 'budget_paused':
       return { kind: 'paused', reason: `Budget: ${failure.error}` };
@@ -145,12 +146,17 @@ export async function requestApproval(ctx: StageContext, action: ApprovalAction,
   return { kind: 'wait', summary: `Waiting for human approval: ${action}`, resumeAt: null, approvalId: approval.id };
 }
 
-async function applyChanges(ctx: StageContext, role: AgentRole, changes: readonly FileChangeOutput[]): Promise<StageOutcome | null> {
+async function applyChanges(
+  ctx: StageContext,
+  role: AgentRole,
+  changes: readonly FileChangeOutput[],
+  tool: 'repository.write' | 'docs.write' = 'repository.write',
+): Promise<StageOutcome | null> {
   const workspace = workspaceFor(ctx.run);
   for (const change of changes) {
     try {
       await ctx.tools.invoke(
-        'repository.write',
+        tool,
         { path: change.path, action: change.action, content: change.content, rationale: change.rationale },
         toolContext(ctx, role, workspace),
       );
@@ -235,11 +241,29 @@ export const analyzeStage: StageHandler = async (ctx) => {
     return passed(`Reused cached analysis for ${index.headSha.slice(0, 7)} (no model call).`);
   }
 
-  const context = await buildContext({ task, files: index.files, tokenBudget: ctx.options.analysisTokenBudget }, contentLoader(ctx));
+  // Best effort (spec §31): summaries of the task's most relevant files, reused while their blob sha is unchanged.
+  let files = index.files;
+  if (deps.fileSummaries) {
+    const summarized = await summarizeFiles({
+      runtime: deps.runtime,
+      store: deps.fileSummaries,
+      project,
+      files,
+      loadContent: contentLoader(ctx),
+      scope: { projectId: project.id, taskId: task.id, runId: run.id },
+      priorityPaths: rankFiles({ task, files, tokenBudget: ctx.options.analysisTokenBudget }).map((r) => r.path),
+      maxBatches: 1,
+      runBudgetRemainingUsd: Math.max(0, run.limits.maxCostUsd - run.costUsd),
+    });
+    track(ctx, summarized);
+    if (summarized.summaries.size > 0) files = files.map((f) => (summarized.summaries.has(f.path) ? { ...f, summary: summarized.summaries.get(f.path)! } : f));
+  }
+
+  const context = await buildContext({ task, files, tokenBudget: ctx.options.analysisTokenBudget }, contentLoader(ctx));
   const outcome = await deps.runtime.run({
     ...agentCommon(ctx),
     definition: AGENT_DEFINITIONS.analyze,
-    input: baseInput(ctx, [{ title: 'Repository', body: summarizeTree(index.files) }], context.files),
+    input: baseInput(ctx, [{ title: 'Repository', body: summarizeTree(files) }], context.files),
   });
   track(ctx, outcome);
   if (!outcome.ok) return onAgentFailure(ctx, outcome);
@@ -256,11 +280,14 @@ export const planStage: StageHandler = async (ctx) => {
   const analysis = parseOutput(AnalysisOutputSchema, run.checkpoint.outputs.analysis);
   const conventions = await deps.memories.search(project.id, { scope: 'project', kind: 'convention', limit: 20 });
   const failures = await deps.memories.search(project.id, { scope: 'failure', limit: 8 });
+  // Research only exists when it was requested explicitly for this task.
+  const research = (await deps.memories.search(project.id, { scope: 'task', kind: 'research', limit: 20 })).filter((m) => m.taskId === ctx.task.id).slice(0, 3);
 
   const sections: AgentInput['sections'] = [
     ...analysisSection(analysis),
     ...(conventions.length > 0 ? [{ title: 'Project conventions', body: conventions.map((c) => `- ${c.content}`).join('\n') }] : []),
     ...(failures.length > 0 ? [{ title: 'Known failures in this project', body: failures.map((f) => `- ${truncate(f.content, 300)}`).join('\n') }] : []),
+    ...(research.length > 0 ? [{ title: 'Research notes', body: research.map((r) => truncate(r.content, 3_000)).join('\n\n') }] : []),
   ];
 
   const outcome = await deps.runtime.run({ ...agentCommon(ctx), definition: AGENT_DEFINITIONS.plan, input: baseInput(ctx, sections) });
@@ -481,17 +508,19 @@ export const implementStage: StageHandler = async (ctx) => {
         : []),
     ];
 
-    const outcome = await deps.runtime.run({
-      ...agentCommon(ctx),
-      priorFailures: run.debugAttempts,
-      definition: AGENT_DEFINITIONS.build,
-      input: baseInput(ctx, sections, context.files),
-    });
+    // Documentation tasks go to the documentation specialist, which may only write documentation files.
+    const docs = task.kind === 'docs';
+    const common = { ...agentCommon(ctx), priorFailures: run.debugAttempts, input: baseInput(ctx, sections, context.files) };
+    const outcome = docs
+      ? await deps.runtime.run({ ...common, definition: AGENT_DEFINITIONS.documentation })
+      : await deps.runtime.run({ ...common, definition: AGENT_DEFINITIONS.build });
     track(ctx, outcome);
     if (!outcome.ok) return onAgentFailure(ctx, outcome);
 
     run.checkpoint.outputs.build = outcome.output;
-    const rejected = await applyChanges(ctx, 'builder', outcome.output.changes);
+    const rejected = docs
+      ? await applyChanges(ctx, 'documentation', outcome.output.changes, 'docs.write')
+      : await applyChanges(ctx, 'builder', outcome.output.changes);
     if (rejected) return rejected;
     run.checkpoint.feedback = [];
     run.checkpoint.buildComplete = true;

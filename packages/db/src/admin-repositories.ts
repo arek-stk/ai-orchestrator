@@ -272,7 +272,8 @@ export class DrizzleRepoFileStore implements RepoFileStore {
 
   async list(projectId: string): Promise<IndexedFile[]> {
     const rows = await this.db.select().from(t.repoFiles).where(eq(t.repoFiles.projectId, projectId));
-    return rows.map((r) => ({ path: r.path, sha: r.sha, size: r.size, summary: r.summary, symbols: r.symbols, imports: r.imports }));
+    // A summary only counts while it was produced for the current blob.
+    return rows.map((r) => ({ path: r.path, sha: r.sha, size: r.size, summary: r.summarySha === r.sha ? r.summary : null, symbols: r.symbols, imports: r.imports }));
   }
 
   async replace(projectId: string, files: readonly IndexedFile[]): Promise<void> {
@@ -311,9 +312,24 @@ export class UsageStatsRepository {
   private readonly tokens = sql<number>`coalesce(sum(${t.usageLedger.inputTokens} + ${t.usageLedger.outputTokens} + ${t.usageLedger.cacheReadTokens} + ${t.usageLedger.cacheWriteTokens}), 0)`;
   private readonly cost = sql<number>`coalesce(sum(${t.usageLedger.costUsd}), 0)`;
 
-  async summary(since: Date, projectId?: string | readonly string[]): Promise<{ costUsd: number; tokens: number; calls: number }> {
-    const [row] = await this.db.select({ costUsd: this.cost, tokens: this.tokens, calls: countExpr }).from(t.usageLedger).where(this.where(since, projectId));
-    return { costUsd: Number(row?.costUsd ?? 0), tokens: Number(row?.tokens ?? 0), calls: Number(row?.calls ?? 0) };
+  async summary(since: Date, projectId?: string | readonly string[]): Promise<{ costUsd: number; tokens: number; calls: number; cacheHits: number; savedUsd: number }> {
+    const [row] = await this.db
+      .select({
+        costUsd: this.cost,
+        tokens: this.tokens,
+        calls: countExpr,
+        cacheHits: sql<number>`cast(count(*) filter (where ${t.usageLedger.cacheHit}) as int)`,
+        savedUsd: sql<number>`coalesce(sum(${t.usageLedger.savedUsd}), 0)`,
+      })
+      .from(t.usageLedger)
+      .where(this.where(since, projectId));
+    return {
+      costUsd: Number(row?.costUsd ?? 0),
+      tokens: Number(row?.tokens ?? 0),
+      calls: Number(row?.calls ?? 0),
+      cacheHits: Number(row?.cacheHits ?? 0),
+      savedUsd: Number(row?.savedUsd ?? 0),
+    };
   }
 
   async byDay(since: Date, projectId?: string | readonly string[]): Promise<Array<{ day: string; costUsd: number; tokens: number }>> {

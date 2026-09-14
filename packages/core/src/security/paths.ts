@@ -85,3 +85,15 @@ const BRANCH_NAME = /^(?![\/-]|.*(?:\/\/|\.\.|@\{|\\|\.lock$|\/$|\.$))[A-Za-z0-9
 export function isValidBranchName(branch: string): boolean {
   return BRANCH_NAME.test(branch);
 }
+
+const DOCUMENTATION_PATHS: readonly RegExp[] = [
+  /\.(md|mdx|markdown|rst|adoc|txt)$/i,
+  /^docs?\//i,
+  /(^|\/)(README|CHANGELOG|CONTRIBUTING|SECURITY|CODE_OF_CONDUCT|AUTHORS|NOTICE)(\.[A-Za-z]+)?$/,
+  /(^|\/)(openapi|swagger)[^/]*\.(ya?ml|json)$/i,
+];
+
+/** Paths the documentation agent may write: prose, docs folders and API description files — never code. */
+export function isDocumentationPath(path: string): boolean {
+  return !isSensitivePath(path) && DOCUMENTATION_PATHS.some((re) => re.test(path));
+}
