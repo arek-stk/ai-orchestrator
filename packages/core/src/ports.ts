@@ -150,7 +150,7 @@ export interface ApprovalRepository {
   get(id: string): Promise<Approval | null>;
   list(filter: { projectId?: string; status?: ApprovalStatus; limit?: number }): Promise<Approval[]>;
   /** Only pending approvals can be decided; returns null if it was already decided. */
-  decide(id: string, status: 'approved' | 'rejected', decidedBy: string, comment: string | null): Promise<Approval | null>;
+  decide(id: string, status: 'approved' | 'rejected' | 'expired', decidedBy: string, comment: string | null): Promise<Approval | null>;
 }
 
 export interface UsageRepository {

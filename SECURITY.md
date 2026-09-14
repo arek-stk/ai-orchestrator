@@ -27,11 +27,17 @@ repository content are untrusted** and enforces the following boundaries:
 | Spend | Budgets per global/project/task/run are checked before every model call; billed tokens of failed attempts are accounted for. |
 | Webhooks | GitHub signatures are verified with HMAC-SHA256 in constant time; unknown payloads are ignored. |
 | Credentials | Provider keys and tokens are stored encrypted (AES-256-GCM) and never placed into model context. |
+| Project access | With `PROJECT_ACL=enforced` (default in production) operators and viewers only see and act on projects they are members of, including lists, costs, event history and the live event stream; foreign resources answer 404. Membership changes are admin-only and audited. |
+| Operations | `/api/metrics` requires a `METRICS_TOKEN` bearer token or an admin session. Logs carry request ids and redact cookies, authorization headers, webhook signatures and secret-like values. Stale approvals expire (`APPROVAL_TTL_HOURS`) instead of waiting forever. |
 
 ## Deployment assumptions
 
-* **One trusted organisation per instance.** Roles (`viewer < operator < admin < owner`) are global; there is no
-  per-project membership yet. Do not share one instance between mutually untrusted teams or customers.
+* **Trusted administrators per instance.** Global roles (`viewer < operator < admin < owner`) still apply first;
+  owners and admins see every project, and instance-wide settings (models, providers, budgets) are shared. With
+  `PROJECT_ACL=enforced` several teams can use one instance with separated projects; keep `PROJECT_ACL=off` only for a
+  single trusted team. Do not grant admin to members of mutually untrusted teams.
+* **Container image.** The server image runs as the non-root `node` user; supply secrets through the environment
+  (`.env` / orchestrator secrets), never bake them into the image.
 * **HTTPS only.** Session cookies are `Secure` in production and whenever `APP_ORIGIN` is an `https://` origin.
   Never expose a development instance (dev login, non-secure cookies) on a network.
 * **Privileged project configuration.** Autonomy level, repository, budget, approval gates, stop conditions, model

@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   AgentRuntime,
   DEFAULT_MODEL_CONFIGS,
@@ -32,6 +34,8 @@ import {
 import { createDemoResponders, DefaultProviderResolver, DockerSandbox, OctokitGitHub, type ProviderCredential } from '@orch/integrations';
 import type { ServerConfig } from './config';
 import { decryptSecret } from './crypto';
+import { EventRelay, LocalEventFanout, PgNotifyEventFanout, type EventFanout } from './event-fanout';
+import { createServerMetrics, type ServerMetrics } from './metrics';
 import { createDemoGitHub } from './seed';
 
 export interface GlobalSettings {
@@ -64,6 +68,8 @@ export interface Container {
   reloadModels(): Promise<void>;
   reloadProviders(): Promise<void>;
   startOfDay(): Date;
+  metrics: ServerMetrics;
+  fanout: EventFanout;
   close(): Promise<void>;
 }
 
@@ -78,12 +84,36 @@ class PersistentEventRecorder implements EventRecorder {
   constructor(
     private readonly store: DrizzleEventStore,
     private readonly bus: EventBus,
+    private readonly fanout: EventFanout,
   ) {}
 
   async emit<T extends EventType>(event: EmitEvent<T>): Promise<void> {
     const saved = await this.store.append(event);
     this.bus.publish(saved);
+    await this.fanout.announce(saved);
   }
+}
+
+/** The production bundle ships migrations next to the bundled module (ADR-020); dev and tests use @orch/db's folder. */
+function migrationsFolder(config: ServerConfig): string | undefined {
+  if (config.migrationsDir) return config.migrationsDir;
+  const bundled = fileURLToPath(new URL('./drizzle', import.meta.url));
+  return existsSync(join(bundled, 'meta', '_journal.json')) ? bundled : undefined;
+}
+
+function createFanout(config: ServerConfig, db: DatabaseHandle, repos: Repositories, bus: EventBus, metrics: ServerMetrics): EventFanout {
+  if (config.eventFanout === 'off' || db.kind !== 'postgres' || !db.listen || !db.notify) return new LocalEventFanout();
+  const { listen, notify } = db;
+  const relay = new EventRelay({
+    loadAfter: (afterId, limit) => repos.events.list({ afterId, order: 'asc', limit }),
+    publish: (event) => bus.publish(event),
+    onResult: (result) => metrics.fanoutEvents.inc({ result }),
+  });
+  return new PgNotifyEventFanout({
+    connection: { listen, notify },
+    relay,
+    log: { warn: (details, message) => console.warn(message, details), error: (details, message) => console.error(message, details) },
+  });
 }
 
 function environmentCredentials(config: ServerConfig): ProviderCredential[] {
@@ -107,15 +137,23 @@ function environmentCredentials(config: ServerConfig): ProviderCredential[] {
 /** Composition root: wires persistence, providers, GitHub, sandbox, agent runtime and orchestrator. */
 export async function createContainer(config: ServerConfig, overrides: ContainerOverrides = {}): Promise<Container> {
   const clock = overrides.clock ?? systemClock;
-  const db = await createDatabase({ url: config.databaseUrl, dataDir: config.inMemoryDatabase ? null : join(config.dataDir, 'pglite') });
+  const migrations = migrationsFolder(config);
+  const db = await createDatabase({
+    url: config.databaseUrl,
+    dataDir: config.inMemoryDatabase ? null : join(config.dataDir, 'pglite'),
+    ...(migrations ? { migrationsFolder: migrations } : {}),
+  });
   await db.migrate();
 
   const repos = createRepositories(db.db);
   const admin = createAdminRepositories(db.db);
   await admin.models.seedDefaults(DEFAULT_MODEL_CONFIGS);
 
+  const metrics = createServerMetrics();
   const bus = new EventBus((error, event) => console.error(`event handler failed for ${event.type}:`, error));
-  const events = new PersistentEventRecorder(repos.events, bus);
+  const fanout = createFanout(config, db, repos, bus, metrics);
+  await fanout.start();
+  const events = new PersistentEventRecorder(repos.events, bus, fanout);
   const queue = new PgJobQueue(db.db, clock);
 
   let credentials: ProviderCredential[] = [];
@@ -234,6 +272,11 @@ export async function createContainer(config: ServerConfig, overrides: Container
     reloadModels,
     reloadProviders,
     startOfDay,
-    close: () => db.close(),
+    metrics,
+    fanout,
+    close: async () => {
+      await fanout.close();
+      await db.close();
+    },
   };
 }

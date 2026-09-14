@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ConcurrentModificationError, PIPELINE_STEP_JOB } from '@orch/core';
+import { expireApprovals } from './approval-expiry';
 import type { Container } from './container';
 
 export interface WorkerLogger {
@@ -60,6 +61,8 @@ export class WorkerPool {
       const result = await this.container.orchestrator.tick();
       if (result.started.length > 0 || result.recovered > 0) this.log.info(result, 'scheduler tick');
       await this.container.admin.sessions.deleteExpired(this.container.clock.now());
+      const expired = await expireApprovals(this.container, this.log);
+      if (expired > 0) this.log.info({ expired }, 'approvals expired');
     } catch (error) {
       this.log.error({ err: error }, 'scheduler tick failed');
     } finally {
@@ -96,14 +99,17 @@ export class WorkerPool {
       const runId = String(job.payload.runId ?? '');
       const result = await this.container.orchestrator.step(runId);
       await this.container.queue.complete(job.id, workerId);
+      this.container.metrics.workerJobs.inc({ type: job.type, outcome: 'succeeded' });
       if (result.next === 'done') this.log.info({ runId, status: result.status }, 'run finished');
     } catch (error) {
       if (error instanceof ConcurrentModificationError) {
         // Another worker already advanced this run; its own follow-up job carries on.
         await this.container.queue.complete(job.id, workerId);
+        this.container.metrics.workerJobs.inc({ type: job.type, outcome: 'superseded' });
       } else {
         this.log.error({ err: error, jobId: job.id }, 'pipeline step failed');
-        await this.container.queue.fail(job.id, workerId, error instanceof Error ? error.message : String(error));
+        const status = await this.container.queue.fail(job.id, workerId, error instanceof Error ? error.message : String(error));
+        this.container.metrics.workerJobs.inc({ type: job.type, outcome: status === 'dead' ? 'dead' : 'retried' });
       }
     } finally {
       clearInterval(heartbeat);

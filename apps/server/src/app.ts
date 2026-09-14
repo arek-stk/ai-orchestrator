@@ -6,15 +6,21 @@ import { ConcurrentModificationError } from '@orch/core';
 import { NotFoundError } from '@orch/db';
 import { registerAuth } from './auth';
 import type { Container } from './container';
+import { loggerOptions, REQUEST_ID_HEADER, requestIdFrom, type LogDestination } from './logging';
+import { registerMemberRoutes } from './routes-members';
+import { registerMetricsRoutes } from './routes-metrics';
 import { registerRoutes } from './routes';
 
 export interface AppOptions {
   logger?: boolean;
+  /** Log destination (tests); implies logging. */
+  logStream?: LogDestination;
 }
 
 export async function buildApp(container: Container, options: AppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: options.logger ? { level: container.config.env === 'production' ? 'info' : 'debug', redact: ['req.headers.cookie', 'req.headers.authorization'] } : false,
+    logger: options.logger || options.logStream ? loggerOptions(container.config.env, options.logStream) : false,
+    genReqId: (request) => requestIdFrom(request.headers[REQUEST_ID_HEADER]),
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: container.config.env === 'production',
   });
@@ -22,7 +28,14 @@ export async function buildApp(container: Container, options: AppOptions = {}): 
   await app.register(cookie);
   await app.register(rateLimit, { max: 600, timeWindow: '1 minute' });
 
-  app.addHook('onSend', async (_request, reply, payload) => {
+  app.addHook('onResponse', async (request, reply) => {
+    const labels = { method: request.method, route: request.routeOptions.url ?? 'unmatched', status: String(reply.statusCode) };
+    container.metrics.httpRequests.inc(labels);
+    container.metrics.httpDuration.observe(labels, reply.elapsedTime / 1000);
+  });
+
+  app.addHook('onSend', async (request, reply, payload) => {
+    reply.header(REQUEST_ID_HEADER, request.id);
     reply.header('x-content-type-options', 'nosniff');
     reply.header('x-frame-options', 'DENY');
     reply.header('referrer-policy', 'same-origin');
@@ -44,5 +57,7 @@ export async function buildApp(container: Container, options: AppOptions = {}): 
 
   registerAuth(app, container);
   await registerRoutes(app, container);
+  await registerMemberRoutes(app, container);
+  await registerMetricsRoutes(app, container);
   return app;
 }
