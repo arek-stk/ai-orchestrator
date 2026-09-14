@@ -9,6 +9,13 @@ updates:
     labels: [dependencies]
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # TypeScript 7 (native port) is not yet supported by Next.js/Vitest tooling (ADR-001).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      # Types must match the Node.js runtime major version (24).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       production-minor-patch:
         dependency-type: production

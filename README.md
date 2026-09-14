@@ -8,8 +8,8 @@ builds the change, tests and debugs it, reviews it, and delivers it through GitH
 human approval gates at every risky step.
 
 > **Status:** active development. The orchestration core, database, model layer, agents, pipeline engine, GitHub
-> adapter and sandbox are implemented and tested. The HTTP server and the web dashboard are next.
-> Progress is tracked in [`docs/STATE.md`](docs/STATE.md).
+> adapter, sandbox and the API server (auth, RBAC, live events, workers) are implemented and tested. The web
+> dashboard is next. Progress is tracked in [`docs/STATE.md`](docs/STATE.md).
 
 ## Why it is different
 
