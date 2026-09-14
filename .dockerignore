@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+.data
+**/.data
+.git
+.github
+.claude
+.env
+.env.*
+!.env.example
+docker-compose.yml
+**/Dockerfile

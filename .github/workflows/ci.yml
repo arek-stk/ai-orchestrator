@@ -33,3 +33,36 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Build server bundle
+        run: npm run build --workspace @orch/server
+
+  docker:
+    name: Server image build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Builds the production image without pushing it anywhere (ADR-020).
+      - name: Build image
+        run: docker build --file apps/server/Dockerfile --tag ai-orchestrator-server:ci .
+
+      - name: Smoke test image
+        run: |
+          docker run -d --name orch-smoke -p 4300:4000 \
+            -e ORCH_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+            ai-orchestrator-server:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4300/api/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs orch-smoke
+          exit 1
+
+      - name: Validate compose file
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+          ORCH_ENCRYPTION_KEY: ci-only-key
+        run: docker compose config --quiet
