@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function parseEncryptionKey(base64: string): Buffer {
@@ -11,11 +11,21 @@ export function parseEncryptionKey(base64: string): Buffer {
 /** Development convenience: a key persisted next to the embedded database (never used in production). */
 export function loadOrCreateDevKey(dataDir: string): Buffer {
   const path = join(dataDir, 'encryption.key');
-  if (existsSync(path)) return parseEncryptionKey(readFileSync(path, 'utf8').trim());
+  // Read first and create exclusively ('wx') instead of check-then-act, so concurrent starts cannot race.
+  try {
+    return parseEncryptionKey(readFileSync(path, 'utf8').trim());
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
   mkdirSync(dataDir, { recursive: true });
   const key = randomBytes(32);
-  writeFileSync(path, key.toString('base64'), { mode: 0o600 });
-  return key;
+  try {
+    writeFileSync(path, key.toString('base64'), { mode: 0o600, flag: 'wx' });
+    return key;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    return parseEncryptionKey(readFileSync(path, 'utf8').trim());
+  }
 }
 
 /** AES-256-GCM; output format `v1:<iv>:<tag>:<ciphertext>` (base64 parts). */
