@@ -18,8 +18,11 @@ export interface SignalInputs {
 }
 
 const SOURCE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|vue|svelte)$/i;
-const TEST = /((\.|_)(test|spec)\.[^/]+$)|((^|\/)(__tests__|tests?|spec|e2e)\/)|((^|\/)test_[^/]+\.py$)/i;
-const NOT_A_MODULE = /(\.d\.ts$)|((^|\/)(index|main|mod)\.[^/]+$)|((^|\/)[^/]*\.config\.[^/]+$)|((^|\/)(migrations?|scripts?|examples?|fixtures?)\/)/i;
+// Path classification uses segment and dot-part checks instead of unanchored regexes: repository paths are untrusted
+// input and backtracking patterns would be a ReDoS vector (CodeQL js/polynomial-redos).
+const TEST_DIRS: ReadonlySet<string> = new Set(['__tests__', 'test', 'tests', 'spec', 'e2e']);
+const NON_MODULE_DIRS: ReadonlySet<string> = new Set(['migration', 'migrations', 'script', 'scripts', 'example', 'examples', 'fixture', 'fixtures']);
+const ENTRY_POINTS: ReadonlySet<string> = new Set(['index', 'main', 'mod']);
 const MANIFEST = /(^|\/)(package\.json|requirements(-dev)?\.txt)$/;
 const CI_FILE = /(^\.github\/workflows\/[^/]+\.ya?ml$)|(^\.gitlab-ci\.ya?ml$)|(^Jenkinsfile$)|(^azure-pipelines\.ya?ml$)/i;
 const DOCKER_FILE = /(^|\/)(Dockerfile(\.[^/]*)?|docker-compose[^/]*\.ya?ml|compose\.ya?ml)$/i;
@@ -27,8 +30,28 @@ const LARGE_MODULE_BYTES = 40_000;
 
 export const MAX_MANIFESTS = 5;
 
+function splitPath(path: string): { dirs: string[]; base: string; parts: string[] } {
+  const dirs = path.toLowerCase().split('/');
+  const base = dirs.pop() ?? '';
+  return { dirs, base, parts: base.split('.') };
+}
+
+/** Test files: test directories, `name.test.ts` / `name.spec.js`, `name_test.go`, `test_name.py`. */
 export function isTestPath(path: string): boolean {
-  return TEST.test(path);
+  const { dirs, base, parts } = splitPath(path);
+  if (dirs.some((dir) => TEST_DIRS.has(dir))) return true;
+  const inner = parts.slice(0, -1);
+  if (inner.slice(1).some((part) => part === 'test' || part === 'spec')) return true;
+  if (inner.some((part) => part.endsWith('_test') || part.endsWith('_spec'))) return true;
+  return base.startsWith('test_') && base.endsWith('.py');
+}
+
+/** Files that are not standalone modules worth their own tests: declarations, entry points, configs, scripts. */
+export function isNonModulePath(path: string): boolean {
+  const { dirs, base, parts } = splitPath(path);
+  if (base.endsWith('.d.ts') || dirs.some((dir) => NON_MODULE_DIRS.has(dir))) return true;
+  if (parts.length >= 2 && ENTRY_POINTS.has(parts[0]!)) return true;
+  return parts.length >= 3 && parts.slice(1, -1).includes('config');
 }
 
 export function isSourcePath(path: string): boolean {
@@ -51,6 +74,21 @@ function stemOf(path: string): string {
     .replace(/^test_/, '')
     .replace(/[._](test|spec)$/i, '')
     .toLowerCase();
+}
+
+const REQUIREMENT_NAME_CHAR = /[A-Za-z0-9._-]/;
+
+/** `name[extras] spec` from one requirements.txt line, parsed in linear time. */
+function parseRequirement(line: string): { name: string; spec: string } | null {
+  let end = 0;
+  while (end < line.length && REQUIREMENT_NAME_CHAR.test(line[end]!)) end++;
+  if (end === 0) return null;
+  let rest = line.slice(end);
+  if (rest.startsWith('[')) {
+    const close = rest.indexOf(']');
+    if (close >= 0) rest = rest.slice(close + 1);
+  }
+  return { name: line.slice(0, end), spec: rest.trim() };
 }
 
 /** Unpinned or unbounded dependency ranges: builds are not reproducible and may pull breaking releases. */
@@ -77,12 +115,13 @@ export function findUnpinnedDependencies(manifest: { path: string; content: stri
     return found;
   }
   for (const raw of manifest.content.split('\n')) {
-    const line = raw.replace(/#.*$/, '').trim();
+    const hash = raw.indexOf('#');
+    const line = (hash >= 0 ? raw.slice(0, hash) : raw).trim();
     if (!line || line.startsWith('-')) continue;
-    const match = /^([A-Za-z0-9._-]+)(\[[^\]]*\])?\s*(.*)$/.exec(line);
-    if (!match) continue;
-    const spec = match[3]!.trim();
-    if (!/(==|~=|<)/.test(spec)) found.push({ name: match[1]!, range: spec || '(any)' });
+    const requirement = parseRequirement(line);
+    if (!requirement) continue;
+    const { name, spec } = requirement;
+    if (!spec.includes('==') && !spec.includes('~=') && !spec.includes('<')) found.push({ name, range: spec || '(any)' });
   }
   return found;
 }
@@ -95,7 +134,7 @@ export function collectSignals(inputs: SignalInputs): HealthSignals {
   const importers = importerCounts(inputs.files);
 
   const untestedModules = source
-    .filter((f) => !NOT_A_MODULE.test(f.path) && !testedStems.has(stemOf(f.path)))
+    .filter((f) => !isNonModulePath(f.path) && !testedStems.has(stemOf(f.path)))
     .map((f) => ({ path: f.path, importers: importers.get(f.path) ?? 0 }))
     .sort((a, b) => b.importers - a.importers || a.path.localeCompare(b.path))
     .slice(0, 10);

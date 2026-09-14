@@ -12,7 +12,7 @@ import { InMemoryGitHub } from '../testing/in-memory-github';
 import { createMemoryStore } from '../testing/memory-store';
 import { heuristicProposals, isAutoAcceptable, priorityFromRoi, proposalFingerprint, proposalTaskInput, roiScore } from './proposals';
 import { HEALTH_SCAN_JOB, HealthScanner } from './scanner';
-import { collectSignals, computeHealthScore, findUnpinnedDependencies } from './signals';
+import { collectSignals, computeHealthScore, findUnpinnedDependencies, isNonModulePath, isTestPath } from './signals';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -198,6 +198,20 @@ describe('health signals and score', () => {
     expect(findUnpinnedDependencies({ path: 'package.json', content: '{"dependencies":{"a":">=1","b":">=1 <2","c":"1.2.3"}}' })).toEqual([{ name: 'a', range: '>=1' }]);
     expect(findUnpinnedDependencies({ path: 'requirements.txt', content: 'requests\nflask==3.0.0\n# comment\nnumpy>=1.2\n-r base.txt\n' }).map((d) => d.name)).toEqual(['requests', 'numpy']);
     expect(findUnpinnedDependencies({ path: 'package.json', content: 'not json' })).toEqual([]);
+    expect(findUnpinnedDependencies({ path: 'requirements.txt', content: 'uvicorn[standard] >=0.30\ndjango[argon2]==5.0 # pinned\n' })).toEqual([{ name: 'uvicorn', range: '>=0.30' }]);
+  });
+
+  it('classifies test and non-module paths without backtracking on hostile input', () => {
+    expect(['src/cart.test.ts', 'src/cart.spec.js', 'pkg/cart_test.go', 'tests/test_cart.py', 'src/__tests__/cart.ts', 'e2e/checkout.ts'].every(isTestPath)).toBe(true);
+    expect(['src/cart.ts', 'src/testing/helpers.ts', 'src/contest.ts', 'test.ts'].some(isTestPath)).toBe(false);
+    expect(['src/types.d.ts', 'src/index.ts', 'vite.config.ts', 'scripts/build.ts', 'db/migrations/0001.ts'].every(isNonModulePath)).toBe(true);
+    expect(['src/cart.ts', 'src/config.ts', 'src/indexer.ts'].some(isNonModulePath)).toBe(false);
+
+    const started = Date.now();
+    isTestPath(`.test.${'.spec.'.repeat(50_000)}`);
+    isNonModulePath(`.config.${'.config.'.repeat(50_000)}`);
+    findUnpinnedDependencies({ path: 'requirements.txt', content: `${'#'.repeat(100_000)}\n-${' '.repeat(100_000)}x\n` });
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
 
