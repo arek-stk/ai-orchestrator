@@ -219,6 +219,43 @@ Format: context → decision → consequences → status.
   current schema owner's `0001`. Implementation plan: `docs/plans/project-room.md`.
 * **Status:** Accepted (2026-09-14), implementation after the running module PRs are merged
 
+### ADR-030 addendum — one conversation model, stage 1 scope (2026-09-15)
+* **Context:** ADR-030 planned a `room_messages` table. The planning assistant (`docs/plans/planning-assistant.md` §5) and
+  the autopilot council (`docs/plans/autopilot.md` §7.1) need the same typed, threaded messages, and the owner agreed that
+  the in-app assistant must not become a second chat system. Nothing of the room existed yet, so unifying now avoids a
+  later migration rewrite.
+* **Decision:**
+  * `conversations` (`kind`: `room | planning | refine | explain | ask | council`; exactly one `room` per project through
+    a partial unique index) and `conversation_messages` replace `room_messages`. A message has `author_type`
+    (`human | assistant | orchestrator | agent | external_ai | system`), `intent` (the ADR-030 intents plus `answer`,
+    `decision`, `clarifying_question`, `brief_update`, `suggestion`), a plain-text `body` (≤ 8 000 characters), `refs`
+    jsonb (task, run, decision, approval, conversation, stage, paths), `thread_id` (one level deep: a reply to a reply
+    joins the root), `reply_count`/`last_reply_at` on the root, a monotonic `seq` as pagination cursor and an optional
+    `dedupe_key`, unique per conversation. Planning sessions, explanations and council transcripts become further kinds
+    on these tables.
+  * Content is untrusted. Core removes control, zero-width and bidi characters, redacts secrets with `redactSecrets` and
+    bounds the length before storing; the web renders text nodes only and turns only `http(s)` URLs into links
+    (`rel="noopener noreferrer nofollow ugc"`).
+  * Orchestrator events reach the room through `withRoomProjection`, a decorating `EventRecorder`, and
+    `RoomEventProjector`. Only allow-listed events are projected: task started/completed/blocked/failed, failed stages
+    and passed PLAN/IMPLEMENT/TEST/REVIEW/DEPLOY, pull request opened, CI failed, deployment finished, budget exhausted,
+    approval required/decided, decision made. Every notice has a dedupe key, so re-executed pipeline steps post once.
+    Routine notices are capped per run (default 12, per process) and followed by one suppression notice; approvals,
+    decisions and task outcomes always pass. Projection failures are logged and never fail a pipeline step. The room
+    service emits `room.message` through the undecorated recorder, so notices never project themselves.
+  * `room.message` events are content-free (`conversationId`, `messageId`, `seq`, `threadId`, `authorType`,
+    `authorName`, `intent`) and use the existing SSE stream with `Last-Event-ID` replay and LISTEN/NOTIFY fan-out
+    (ADR-008, ADR-024). Clients load bodies through the room API, which applies RBAC and the per-project ACL again.
+  * API in `apps/server/src/routes-room.ts` (ADR-016 style): viewers read; operators post `message | question` and reply
+    (`message | answer`); 30 posts per user per minute; audit entries `room.post` and `room.reply` without content.
+  * **Stage 1 as shipped:** data model (migration `0002_project_room`), room service, event projection, API with SSE,
+    Room tab in the web app, demo seed. **Moved to later stages:** leases with scheduler and pipeline checks, board
+    transitions and the new task columns, `@orchestrator` commands, read markers, MCP server and AI identities,
+    objections as council input.
+* **Consequences:** The planning assistant and the autopilot add their own tables and conversation kinds, not a second
+  message table. With several worker processes the per-run cap applies per process.
+* **Status:** Accepted (2026-09-15)
+
 ## ADR-013 — Project Health Scan: deterministic score, ROI-ranked proposals, guarded auto-acceptance
 * **Context:** Spec §14 asks for autonomous product improvement without "unrequested large changes". Model output is
   not reproducible, and an improvement loop must not flood projects with work or spend unbounded budget.

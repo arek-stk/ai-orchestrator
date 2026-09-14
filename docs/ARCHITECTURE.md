@@ -189,6 +189,14 @@ health score (persisted on `projects.health_score` and in `health_scans`) → he
 become BACKLOG tasks when accepted via API, or automatically only at autonomy ≥ 3 for low-risk, small-effort proposals
 (capped). API: `apps/server/src/routes-health.ts`. Events: `project.health_scanned`, `improvement.proposed|accepted|dismissed`.
 
+### 4.15 Project Room and conversations (ADR-030)
+One conversation model for every chat surface: `conversations` (one `room` per project; planning, explain and council
+kinds later) and `conversation_messages` (typed author and intent, plain-text body, refs, one-level threads, `seq`
+cursor, dedupe key). `RoomService` (`packages/core/src/room`) sanitises and redacts untrusted content; the composition
+root wraps the event recorder with `withRoomProjection`, so allow-listed orchestrator events become deduplicated,
+per-run capped room notices. API: `apps/server/src/routes-room.ts`; live updates are content-free `room.message` events
+on the SSE stream.
+
 ## 7. Deferred (post-MVP, interfaces already in place)
 Temporal workflow engine (behind `WorkflowEngine`), BullMQ/Redis queue (behind `JobQueue`), additional
 model providers, Frontend/Backend/Database specialist agents, web research tool (`research.web`) and registry-based
