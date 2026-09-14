@@ -5,6 +5,7 @@ import { useParams, usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ProjectStatusBadge } from '@/components/domain';
 import { useBreadcrumb } from '@/components/shell';
+import { RoomTab } from '@/components/project-room';
 import { ProjectSettingsTab } from '@/components/project-settings';
 import { AgentsTab, CostsTab, DecisionsTab, GitHubTab, LogsTab, OverviewTab, PipelineTab, TasksTab, TestsTab } from '@/components/project-tabs';
 import { hasRole, useSession } from '@/components/providers';
@@ -13,7 +14,7 @@ import { useAction, useApi } from '@/hooks/use-api';
 import { api } from '@/lib/api';
 import type { ProjectDetailResponse } from '@/lib/types';
 
-const TAB_IDS = ['overview', 'pipeline', 'tasks', 'agents', 'github', 'tests', 'logs', 'decisions', 'costs', 'settings'] as const;
+const TAB_IDS = ['overview', 'room', 'pipeline', 'tasks', 'agents', 'github', 'tests', 'logs', 'decisions', 'costs', 'settings'] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 export default function ProjectPage() {
@@ -23,7 +24,8 @@ export default function ProjectPage() {
   const { user } = useSession();
   const [tab, setTab] = useState<TabId>('overview');
   const detail = useApi<ProjectDetailResponse>(id ? `/api/projects/${encodeURIComponent(id)}` : null, {
-    live: (event) => event.projectId === id && event.type !== 'scheduler.tick',
+    // Room messages refresh the Room tab only, not the whole project detail.
+    live: (event) => event.projectId === id && event.type !== 'scheduler.tick' && event.type !== 'room.message',
   });
   const action = useAction();
   useBreadcrumb(detail.data ? [{ label: 'Projects', href: '/projects' }, { label: detail.data.project.name }] : null);
@@ -61,6 +63,7 @@ export default function ProjectPage() {
 
   const tabs = [
     { id: 'overview', label: 'Overview' },
+    { id: 'room', label: 'Room' },
     { id: 'pipeline', label: 'Pipeline', count: data.runs.length },
     { id: 'tasks', label: 'Tasks', count: openTasks },
     { id: 'agents', label: 'Agents' },
@@ -118,6 +121,7 @@ export default function ProjectPage() {
       <Refreshable busy={detail.refreshing}>
         <TabPanel idPrefix="project" id={tab}>
           {tab === 'overview' ? <OverviewTab detail={data} /> : null}
+          {tab === 'room' ? <RoomTab projectId={project.id} /> : null}
           {tab === 'pipeline' ? <PipelineTab detail={data} /> : null}
           {tab === 'tasks' ? <TasksTab detail={data} reload={detail.reload} /> : null}
           {tab === 'agents' ? <AgentsTab projectId={project.id} /> : null}
