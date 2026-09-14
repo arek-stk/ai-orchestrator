@@ -84,6 +84,34 @@ a simulated GitHub and CI. Sign in with the dev login (`ALLOW_DEV_LOGIN=true`, n
 Add real providers in **Settings → Models / Providers** or via `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `GOOGLE_API_KEY`, `OPENAI_COMPATIBLE_BASE_URL`; connect GitHub with `GITHUB_TOKEN` (fine-grained PAT or App token).
 
+## Deploy with Docker
+
+The server ships as a container image built from the repository root; `docker-compose.yml` runs it with PostgreSQL.
+
+```bash
+cp .env.example .env
+# required: ORCH_ENCRYPTION_KEY (32 random bytes, base64), POSTGRES_PASSWORD, APP_ORIGIN (public https origin)
+# recommended: GITHUB_CLIENT_ID/SECRET (login), GITHUB_TOKEN, provider keys, METRICS_TOKEN
+docker compose up -d --build        # PostgreSQL 17 + server on http://localhost:4000
+docker compose ps                   # both services report "healthy"
+```
+
+* **Image:** `apps/server/Dockerfile` bundles the server with esbuild (`npm run build -w @orch/server` →
+  `apps/server/dist`, migrations included), runs as the non-root `node` user on `node:24-slim` and checks
+  `/api/health`. Migrations are applied on start.
+* **Without Docker:** `npm run build -w @orch/server` and `NODE_ENV=production node apps/server/dist/main.js`
+  (install `apps/server/dist/package.json` dependencies when copying `dist` elsewhere).
+* **Web UI:** once `apps/web/Dockerfile` exists, `docker compose --profile web up -d --build` adds the dashboard on
+  port 3000 with `ORCH_SERVER_URL=http://server:4000`. Put both behind one HTTPS reverse proxy so cookies and the
+  CSRF origin check see a single origin.
+* **Scaling:** run additional containers with `SERVER_ROLE=api` or `SERVER_ROLE=worker` against the same
+  PostgreSQL; live events fan out between instances via `LISTEN/NOTIFY`.
+* **Access control:** `PROJECT_ACL=enforced` (the production default) limits operators and viewers to projects they
+  are members of. Admins manage members with `PUT /api/projects/:id/members/:userId` (`{"role":"operator"}`).
+* **Monitoring:** scrape `GET /api/metrics` with `Authorization: Bearer $METRICS_TOKEN` (Prometheus text format);
+  every response carries an `x-request-id` that also appears in the JSON logs.
+* **Approvals** that stay pending longer than `APPROVAL_TTL_HOURS` (default 72) expire and block their run.
+
 ## Automation & GitHub AI
 
 | Area | What runs |

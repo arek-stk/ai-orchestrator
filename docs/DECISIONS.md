@@ -131,6 +131,70 @@ Format: context → decision → consequences → status.
   merges anything.
 * **Status:** Accepted (2026-09-14)
 
+## ADR-020 — Production build: esbuild bundle, container image and compose stack
+* **Context:** ADR-001 bundles the server for production, but no bundle, image or deployment description existed.
+  Internal packages export TypeScript source; PGlite loads WASM files relative to its module.
+* **Decision:** `apps/server/scripts/build.mjs` bundles `src/main.ts` with esbuild into `apps/server/dist/main.js`
+  (ESM, node24, `createRequire` banner). `@electric-sql/pglite` stays external and is listed in a generated
+  `dist/package.json`; `pg-native` is external (optional). Drizzle migrations are copied to `dist/drizzle`; the
+  container uses `MIGRATIONS_DIR` or auto-detects a `drizzle` folder next to the bundle before falling back to
+  `@orch/db`'s folder. `apps/server/Dockerfile` (context: repository root) is a two-stage `node:24-slim` build running
+  as the non-root `node` user with an HTTP healthcheck on `/api/health`. `docker-compose.yml` runs PostgreSQL 17
+  (named volume, `pg_isready`) and the server (secrets via `.env` and required `${VAR:?}` interpolation); the web UI is
+  a `web` profile building `apps/web/Dockerfile` once that exists. CI builds the image on pull requests without
+  pushing.
+* **Consequences:** One self-contained artefact per release; no registry publishing yet. Adding a dependency that
+  loads files relative to its module requires listing it in `RUNTIME_DEPENDENCIES`.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-021 — Metrics endpoint and structured request logging
+* **Context:** Operations (spec §21) needs queue depth, run states, spend and HTTP health without adding services.
+* **Decision:** `GET /api/metrics` renders Prometheus text format from a small dependency-free registry (bounded
+  series per metric). Access: a bearer token equal to `METRICS_TOKEN` (compared as SHA-256 digests in constant time)
+  or an admin session; nothing else. Gauges are collected from the database on scrape (runs by status, jobs by status,
+  active agent runs, pending approvals, cost/tokens/calls today); counters and histograms are process-local (HTTP
+  requests and durations labelled with the route template, worker job outcomes, approvals expired, fan-out results).
+  Requests carry an id (valid inbound `x-request-id` or a UUID) that is logged as `reqId` and echoed in the response;
+  pino redacts credential headers and secret-like fields, and the error serializer runs `redactSecrets`.
+* **Consequences:** Scrape every instance (API and worker processes keep their own counters). A worker-only process
+  has no HTTP listener, so its counters are not exposed.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-022 — Per-project access control on `project_members` (refines ADR-007)
+* **Context:** Security review: roles are global, so every operator/viewer can read and act on every project.
+* **Decision:** `PROJECT_ACL=enforced|off` (default `enforced` when `NODE_ENV=production`, `off` otherwise). Owners and
+  admins see every project. Operators and viewers see only projects they are members of; the effective project role
+  is the lower of the global role and the membership role (`operator | viewer`). Every project-scoped route asserts
+  access (reads of foreign resources answer 404, insufficient project role 403); list endpoints, costs, dashboard and
+  event history merge per-project queries over the user's memberships (bounded to 500); the SSE stream filters events
+  and refreshes memberships every heartbeat; events without a project are hidden from restricted users. Admins manage
+  memberships via `/api/projects/:id/members` (audited). Global role checks from ADR-007 still apply first.
+* **Consequences:** Instances can host several teams with separated projects. Global settings, models, providers and
+  queue depth remain instance-wide and are visible according to global roles only.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-023 — Approval expiry
+* **Context:** Pending approvals never expired, parking runs in `WAITING` indefinitely.
+* **Decision:** `APPROVAL_TTL_HOURS` (default 72, `0` disables). The scheduler tick expires up to 100 of the oldest
+  pending approvals older than the TTL (`status = expired`, `decided_by = system`), then the orchestrator blocks the
+  waiting run with "Approval for <action> expired without a decision". `approval.decided` carries status `expired`;
+  the audit log records `approval.expired`. Late decisions on finished or cancelled runs are ignored.
+* **Consequences:** Stale gates surface as blocked tasks that can be retried, which requests a fresh approval.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-024 — Multi-instance event fan-out with PostgreSQL LISTEN/NOTIFY (completes ADR-008)
+* **Context:** With `SERVER_ROLE=api` and `worker` processes, SSE clients of an API instance never saw events emitted
+  by workers until they reconnected.
+* **Decision:** On PostgreSQL (`EVENT_FANOUT=auto`), the event recorder persists the event, publishes it locally, marks
+  its id as seen and sends `NOTIFY orch_events '<id>'`. Every instance listens on a dedicated connection, validates the
+  payload, deduplicates ids (bounded set of 10 000), loads the row and publishes it on its local bus. After a lost
+  listener connection it reconnects with backoff and replays events newer than the highest id it has seen (bounded
+  500). PGlite (single process) keeps the in-process bus only. The relay logic is independent of the driver and tested
+  with fakes.
+* **Consequences:** Notification payloads never contain event data; ordering across instances is best effort (SSE
+  clients still replay by id). A failed NOTIFY is logged; the event remains persisted.
+* **Status:** Accepted (2026-09-14)
+
 ## ADR-030 — Collaboration and planning: Project Room, MCP access for external AIs, leases, Kanban and roadmap
 * **Context:** The owner wants colleagues and friends — and their own AI assistants (Claude Code, Copilot, Cursor…) —
   to work on the same repository together with the orchestrator, talk in a shared chat, and plan work on a Kanban

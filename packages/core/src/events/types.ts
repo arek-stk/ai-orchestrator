@@ -30,7 +30,7 @@ export interface EventPayloads {
   'deployment.started': { workflow: string };
   'deployment.completed': { workflow: string; conclusion: string };
   'approval.required': { approvalId: string; action: GatedAction | 'publish_changes'; risk: string; reason: string };
-  'approval.decided': { approvalId: string; status: 'approved' | 'rejected'; by: string };
+  'approval.decided': { approvalId: string; status: 'approved' | 'rejected' | 'expired'; by: string };
   'budget.exhausted': { scope: string; reason: string };
   'scheduler.tick': { selected: number; skipped: number };
 }

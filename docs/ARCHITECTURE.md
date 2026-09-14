@@ -140,12 +140,24 @@ a `usage_ledger` row.
 Typed domain events (`task.created`, `agent.completed`, `test.failed`, `ci.failed`,
 `approval.required`, `project.blocked`, …) are persisted to `events` and published on the in-process bus;
 SSE clients subscribe with project filters. Workers react to events by enqueueing jobs — no polling
-agents.
+agents. On PostgreSQL, events fan out across instances with `LISTEN/NOTIFY` carrying only the event id;
+listeners load the row, deduplicate by id and replay gaps after reconnects (ADR-024).
+
+### 4.14 Operations
+* **Deployment (ADR-020):** esbuild bundle `apps/server/dist` (migrations included), `apps/server/Dockerfile`,
+  `docker-compose.yml` with PostgreSQL; the CI image build runs on pull requests.
+* **Metrics (ADR-021):** `GET /api/metrics` (Prometheus text; `METRICS_TOKEN` bearer or admin session): runs and jobs
+  by status, active agent runs, pending approvals, spend today, HTTP requests/durations by route template, worker job
+  outcomes. Logs carry `reqId` (echoed as `x-request-id`) and redact credentials.
+* **Approval expiry (ADR-023):** the scheduler tick expires approvals older than `APPROVAL_TTL_HOURS` and blocks
+  their run with a reason.
 
 ## 5. Security architecture
 * Auth: GitHub OAuth; DB-backed sessions (random 256-bit token, only SHA-256 hash stored, httpOnly,
   SameSite=Lax, Secure in prod). Dev login only when `ALLOW_DEV_LOGIN=true` and not production.
-* RBAC: global roles `owner | admin | operator | viewer` + per-project membership.
+* RBAC: global roles `owner | admin | operator | viewer` + per-project membership. With `PROJECT_ACL=enforced`
+  (production default) operators/viewers only see and act on member projects, with the lower of global and
+  membership role; owners/admins see all (ADR-022).
 * Mutating requests require same-origin `Origin` header (CSRF) and an authenticated session.
 * Secrets (GitHub tokens, provider keys) encrypted at rest with AES-256-GCM (`ORCH_ENCRYPTION_KEY`),
   never placed into model context, redacted from logs.
@@ -168,4 +180,4 @@ agents.
 ## 7. Deferred (post-MVP, interfaces already in place)
 Temporal workflow engine (behind `WorkflowEngine`), BullMQ/Redis queue (behind `JobQueue`), additional
 model providers, Research/Documentation/DevOps/Release/Frontend/Backend/Database agents, autonomous
-product-improvement scans, LISTEN/NOTIFY multi-instance event fan-out, deployments.
+product-improvement scans, image publishing and orchestrated (Kubernetes) deployments.

@@ -322,7 +322,8 @@ export class Orchestrator {
     const approval = await this.deps.approvals.get(approvalId);
     if (!approval?.runId || approval.status === 'pending') return null;
     const run = await this.deps.runs.get(approval.runId);
-    if (!run || run.checkpoint.pendingApprovalId !== approval.id) return null;
+    // A cancelled or finished run keeps its checkpoint; a late decision (or expiry) must not reopen or block it.
+    if (!run || TERMINAL_RUN_STATUSES.has(run.status) || run.checkpoint.pendingApprovalId !== approval.id) return null;
     const [task, project] = await Promise.all([this.deps.tasks.get(run.taskId), this.deps.projects.get(run.projectId)]);
     if (!task || !project) return null;
 
@@ -331,13 +332,21 @@ export class Orchestrator {
       projectId: project.id,
       taskId: task.id,
       runId: run.id,
-      payload: { approvalId: approval.id, status: approval.status === 'approved' ? 'approved' : 'rejected', by: approval.decidedBy ?? 'unknown' },
+      payload: {
+        approvalId: approval.id,
+        status: approval.status === 'approved' ? 'approved' : approval.status === 'expired' ? 'expired' : 'rejected',
+        by: approval.decidedBy ?? 'unknown',
+      },
     });
     run.checkpoint.pendingApprovalId = null;
 
     if (approval.status !== 'approved') {
       const note = approval.comment ? `: ${approval.comment}` : '';
-      await this.block(run, task, project, `${approval.action} was rejected by ${approval.decidedBy ?? 'a reviewer'}${note}.`);
+      const reason =
+        approval.status === 'expired'
+          ? `Approval for ${approval.action} expired without a decision${note}. Retry the task to request a new approval.`
+          : `${approval.action} was rejected by ${approval.decidedBy ?? 'a reviewer'}${note}.`;
+      await this.block(run, task, project, reason);
       return this.persist(run, { next: 'done', status: run.status });
     }
 

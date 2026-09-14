@@ -480,7 +480,18 @@ export class DrizzleApprovalRepository implements ApprovalRepository {
     return rows.map(toApproval);
   }
 
-  async decide(id: string, status: 'approved' | 'rejected', decidedBy: string, comment: string | null): Promise<Approval | null> {
+  /** Oldest pending approvals requested before `before` (approval expiry, ADR-023). */
+  async listPendingBefore(before: Date, limit: number): Promise<Approval[]> {
+    const rows = await this.db
+      .select()
+      .from(t.approvals)
+      .where(and(eq(t.approvals.status, 'pending'), sql`${t.approvals.requestedAt} <= ${before}`))
+      .orderBy(asc(t.approvals.requestedAt))
+      .limit(limit);
+    return rows.map(toApproval);
+  }
+
+  async decide(id: string, status: 'approved' | 'rejected' | 'expired', decidedBy: string, comment: string | null): Promise<Approval | null> {
     const [row] = await this.db
       .update(t.approvals)
       .set({ status, decidedBy, comment, decidedAt: new Date() })

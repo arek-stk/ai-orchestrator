@@ -20,6 +20,11 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | — | GitHub AI (ADR-012): Copilot instructions + `AGENTS.md`, Copilot code review ruleset, coding-agent setup steps, AI issue triage and PR summaries via GitHub Copilot | ✅ done | workflows green; AI jobs need `COPILOT_GITHUB_TOKEN` |
 | 11 | Web dashboard (Next.js 16, React 19, Tailwind 4): dashboard, projects with tabs, runs, agents, approvals, decisions, costs, settings, live events | 🚧 in progress | — |
 | 12 | Security review of server, adapters and AI workflows: admin-only project profile (sandbox commands), sandbox installs only via restricted egress network, Secure cookies on HTTPS, deployment assumptions in SECURITY.md; earlier reviews fixed billing of failed attempts, git option injection, NTFS streams, destructive SQL detection, council prompt injection, dev-key race (CodeQL) | ✅ done | PR #8 · regression tests · CodeQL clean |
+| 12a | Per-project access control (ADR-022): `PROJECT_ACL`, membership API, enforcement on projects, tasks, runs, agent runs, decisions, approvals, memory, costs, dashboard, event history and SSE | ✅ done | `acl.test.ts`: cross-project denial for 13 reads and 10 mutations, role capping, membership audit |
+| 12b | Approval expiry (ADR-023): TTL, blocked run with reason, event + audit, no reopening of finished runs | ✅ done | `approval-expiry.test.ts` (4 tests) |
+| 14 | Deployment (ADR-020): esbuild bundle with migrations, multi-stage Dockerfile (non-root, healthcheck), docker compose with PostgreSQL, CI image build on PRs | ✅ done | bundle started locally against PGlite; `docker compose config` valid; image build runs in CI (no local Docker daemon) |
+| 15 | Observability (ADR-021): `/api/metrics` (Prometheus), request ids, log redaction, worker/HTTP counters | ✅ done | `metrics.test.ts` |
+| 16 | Multi-instance events (ADR-024): LISTEN/NOTIFY fan-out with dedupe, reconnect and gap replay | ✅ done | `event-fanout.test.ts` with fakes; not yet exercised against a real PostgreSQL |
 | 13 | Optimisation: caching, decision reuse | ⏳ | — |
 
 ## Known constraints on the dev machine

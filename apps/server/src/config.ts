@@ -38,6 +38,11 @@ const EnvSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(2),
   SCHEDULER_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
   DEMO_LATENCY_MS: z.coerce.number().int().min(0).max(30_000).default(600),
+  PROJECT_ACL: z.enum(['enforced', 'off']).optional(),
+  METRICS_TOKEN: optionalString,
+  APPROVAL_TTL_HOURS: z.coerce.number().min(0).max(24 * 365).default(72),
+  MIGRATIONS_DIR: optionalString,
+  EVENT_FANOUT: z.enum(['auto', 'off']).default('auto'),
 });
 
 export interface ServerConfig {
@@ -68,6 +73,16 @@ export interface ServerConfig {
   workerConcurrency: number;
   schedulerIntervalMs: number;
   demoLatencyMs: number;
+  /** Per-project access control (ADR-022). */
+  projectAcl: 'enforced' | 'off';
+  /** Bearer token for /api/metrics scrapers; null = admin session only (ADR-021). */
+  metricsToken: string | null;
+  /** Pending approvals older than this expire; 0 disables expiry (ADR-023). */
+  approvalTtlMs: number;
+  /** Drizzle migrations folder override (production bundle, ADR-020). */
+  migrationsDir: string | null;
+  /** auto = LISTEN/NOTIFY fan-out on PostgreSQL, in-process bus on PGlite (ADR-024). */
+  eventFanout: 'auto' | 'off';
 }
 
 export function loadConfig(
@@ -77,6 +92,10 @@ export function loadConfig(
   const parsed = EnvSchema.parse(env);
   const production = parsed.NODE_ENV === 'production';
   const inMemoryDatabase = overrides.inMemoryDatabase ?? false;
+
+  if (parsed.METRICS_TOKEN && parsed.METRICS_TOKEN.length < 24) {
+    throw new Error('METRICS_TOKEN must be at least 24 characters long.');
+  }
 
   if (parsed.SERVER_ROLE !== 'all' && !parsed.DATABASE_URL) {
     throw new Error('SERVER_ROLE=api|worker requires DATABASE_URL: the embedded database is single-process (ADR-002).');
@@ -120,5 +139,11 @@ export function loadConfig(
     workerConcurrency: parsed.WORKER_CONCURRENCY,
     schedulerIntervalMs: parsed.SCHEDULER_INTERVAL_MS,
     demoLatencyMs: overrides.demoLatencyMs ?? parsed.DEMO_LATENCY_MS,
+    // Enforced by default in production; development and tests keep the single-team demo simple.
+    projectAcl: parsed.PROJECT_ACL ?? (production ? 'enforced' : 'off'),
+    metricsToken: parsed.METRICS_TOKEN,
+    approvalTtlMs: parsed.APPROVAL_TTL_HOURS * 60 * 60 * 1000,
+    migrationsDir: parsed.MIGRATIONS_DIR,
+    eventFanout: parsed.EVENT_FANOUT,
   };
 }
