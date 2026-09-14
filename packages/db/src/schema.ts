@@ -23,6 +23,8 @@ import type {
   AutonomyLevel,
   Complexity,
   ConsultedAgent,
+  ConversationKind,
+  ConversationStatus,
   DecisionOption,
   Effort,
   HealthBreakdownItem,
@@ -32,6 +34,9 @@ import type {
   Impact,
   ImprovementCategory,
   LatencyClass,
+  MessageAuthorType,
+  MessageIntent,
+  MessageRefs,
   ProposalSource,
   ProposalStatus,
   MemoryScope,
@@ -585,5 +590,69 @@ export const improvementProposals = pgTable(
   (t) => [
     uniqueIndex('improvement_proposals_project_fingerprint_uq').on(t.projectId, t.fingerprint),
     index('improvement_proposals_project_status_idx').on(t.projectId, t.status, t.priority),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Conversations: Project Room and later planning, explain and council threads (ADR-030 addendum)
+// ---------------------------------------------------------------------------
+
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<ConversationKind>().notNull(),
+    title: text('title').notNull().default(''),
+    status: text('status').$type<ConversationStatus>().notNull().default('active'),
+    createdBy: text('created_by'),
+    messageCount: integer('message_count').notNull().default(0),
+    lastActivityAt: ts('last_activity_at').notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // Exactly one room per project, also under concurrent first use.
+    uniqueIndex('conversations_project_room_uq')
+      .on(t.projectId)
+      .where(sql`kind = 'room'`),
+    index('conversations_project_kind_activity_idx').on(t.projectId, t.kind, t.lastActivityAt),
+  ],
+);
+
+export const conversationMessages = pgTable(
+  'conversation_messages',
+  {
+    id: text('id').primaryKey(),
+    /** Insertion order across all conversations; the pagination cursor. */
+    seq: bigserial('seq', { mode: 'number' }).notNull(),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    /** Denormalised for access control and event filters. */
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id').references((): AnyPgColumn => conversationMessages.id, { onDelete: 'cascade' }),
+    authorType: text('author_type').$type<MessageAuthorType>().notNull(),
+    authorId: text('author_id'),
+    authorName: text('author_name').notNull(),
+    intent: text('intent').$type<MessageIntent>().notNull().default('message'),
+    body: text('body').notNull(),
+    refs: jsonb('refs').$type<MessageRefs>().notNull().default(emptyObject),
+    dedupeKey: text('dedupe_key'),
+    replyCount: integer('reply_count').notNull().default(0),
+    lastReplyAt: ts('last_reply_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('conversation_messages_seq_uq').on(t.seq),
+    // Top-level timeline of a conversation, paged by seq.
+    index('conversation_messages_top_level_idx')
+      .on(t.conversationId, t.seq)
+      .where(sql`thread_id is null`),
+    index('conversation_messages_thread_idx').on(t.threadId, t.seq),
+    index('conversation_messages_project_created_idx').on(t.projectId, t.createdAt),
+    uniqueIndex('conversation_messages_dedupe_uq')
+      .on(t.conversationId, t.dedupeKey)
+      .where(sql`dedupe_key is not null`),
   ],
 );
