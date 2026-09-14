@@ -18,6 +18,19 @@ export interface DatabaseHandle {
   kind: 'postgres' | 'pglite';
   migrate(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * PostgreSQL only: LISTEN on a channel with a dedicated connection (multi-instance event fan-out, ADR-024).
+   * `onError` fires when the connection is lost; the returned function stops listening and releases it.
+   */
+  listen?(channel: string, onPayload: (payload: string | undefined) => void, onError: (error: unknown) => void): Promise<() => Promise<void>>;
+  notify?(channel: string, payload: string): Promise<void>;
+}
+
+const CHANNEL_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
+
+function assertChannel(channel: string): void {
+  // Channel names are identifiers in LISTEN and cannot be bound as parameters.
+  if (!CHANNEL_PATTERN.test(channel)) throw new Error(`invalid channel name: ${channel}`);
 }
 
 export interface DatabaseOptions {
@@ -42,6 +55,41 @@ export async function createDatabase(options: DatabaseOptions = {}): Promise<Dat
       kind: 'postgres',
       migrate: () => migratePg(db, { migrationsFolder }),
       close: () => pool.end(),
+      listen: async (channel, onPayload, onError) => {
+        assertChannel(channel);
+        const client = await pool.connect();
+        let released = false;
+        const onNotification = (message: pg.Notification) => {
+          if (message.channel === channel) onPayload(message.payload);
+        };
+        const onClientError = (error: unknown) => onError(error);
+        const onEnd = () => {
+          if (!released) onError(new Error('listener connection ended'));
+        };
+        client.on('notification', onNotification);
+        client.on('error', onClientError);
+        client.on('end', onEnd);
+        const release = async (destroy: boolean) => {
+          if (released) return;
+          released = true;
+          client.off('notification', onNotification);
+          client.off('end', onEnd);
+          if (!destroy) await client.query(`UNLISTEN ${channel}`).catch(() => {});
+          client.off('error', onClientError);
+          client.release(true);
+        };
+        try {
+          await client.query(`LISTEN ${channel}`);
+        } catch (error) {
+          await release(true);
+          throw error;
+        }
+        return () => release(false);
+      },
+      notify: async (channel, payload) => {
+        assertChannel(channel);
+        await pool.query('select pg_notify($1, $2)', [channel, payload]);
+      },
     };
   }
 
