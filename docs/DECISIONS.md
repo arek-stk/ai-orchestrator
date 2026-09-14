@@ -103,3 +103,30 @@ Format: context → decision → consequences → status.
 * **Decision:** Each agent definition owns a zod schema. Providers must return data conforming to it;
   the runtime re-validates. Validation failure consumes an attempt and is recorded, never coerced.
 * **Status:** Accepted (2026-09-14)
+
+## ADR-011 — TypeScript 7 for packages and server; the web app keeps TypeScript 5.9 (supersedes the TS part of ADR-001)
+* **Context:** The repository owner merged the Dependabot update to `typescript@7` (native port). Typecheck and all
+  tests of `packages/*` and `apps/server` pass with it. TypeScript 7 no longer ships the classic JavaScript compiler
+  API (`typescript` exports only a version module and `unstable/*` APIs), which Next.js uses during `next build`.
+* **Decision:** Root toolchain uses `typescript@~7`. `apps/web` declares its own `typescript@~5.9` devDependency so
+  Next.js resolves the classic API locally. Dependabot ignores further TypeScript and `@types/node` major updates
+  until they are evaluated explicitly.
+* **Consequences:** Two TypeScript majors in one repository; `npm run typecheck` runs each workspace with the version
+  it resolves. Revisit when Next.js supports TypeScript 7.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-012 — Repository automation and GitHub AI
+* **Context:** The repository is public; the owner asked for all available bots, automation and GitHub AI.
+* **Decision:**
+  * Required CI on `main` (branch protection, conversation resolution, no force pushes); CodeQL (`security-extended`),
+    dependency review, OpenSSF Scorecard, secret scanning with push protection, Dependabot alerts and security updates.
+  * Dependabot grouped weekly updates with auto-merge for minor/patch after CI; third-party actions pinned to SHAs.
+  * release-please for versioning, changelog and GitHub releases from Conventional Commits.
+  * Copilot: repository instructions (`.github/copilot-instructions.md`, `AGENTS.md`), automatic Copilot code review
+    via ruleset, `copilot-setup-steps` for the coding agent.
+  * AI workflows (issue triage, PR summaries) through `actions/ai-inference` + Copilot CLI with a
+    `COPILOT_GITHUB_TOKEN` secret. Untrusted text reaches the model only via files, the model gets no tools, labels
+    pass an allow-list, jobs run with minimal permissions and skip when the secret is absent.
+* **Consequences:** Every change lands through a pull request with green CI; AI output is advisory and never gates or
+  merges anything.
+* **Status:** Accepted (2026-09-14)

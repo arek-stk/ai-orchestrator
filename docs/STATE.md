@@ -16,7 +16,9 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | 9 | GitHub integration: Octokit adapter (Git Data API commits, PR upsert, checks + workflow runs aggregation with failing-job logs, re-runs, merge, workflow dispatch, rate-limit → wait), HMAC webhook verification + event parsing; Docker sandbox (hardened `docker run`, snapshot + change set workspace, infra vs command failures, timeouts) | ✅ done | adapter tested against a local fake GitHub API; sandbox with fake exec |
 | — | Public repository hygiene: README, MIT license, SECURITY.md, CONTRIBUTING.md, GitHub Actions CI | ✅ done | — |
 | 10 | Server (`apps/server`): env config, AES-GCM secrets, composition root (PGlite/Postgres, provider credentials from env + encrypted settings, demo mode with mock agents and simulated GitHub/CI), GitHub OAuth + dev login, DB sessions (hashed tokens), RBAC, CSRF origin check, rate limits, security headers, REST API (dashboard, projects, tasks, runs, agents, decisions, approvals, memory, costs, models, providers, settings, users, audit), SSE live events with replay, HMAC GitHub webhooks waking CI-waiting runs, worker pool with leases/heartbeat + scheduler tick, demo seed | ✅ done | 9 API tests incl. full pipeline through workers · 175 tests total |
-| 11 | Web dashboard (Next.js) | ⏳ | — |
+| — | Repository automation (ADR-012): branch protection, CodeQL, dependency review, Scorecard, secret scanning + push protection, Dependabot with auto-merge, release-please, labeler, stale, issue/PR templates, CODEOWNERS | ✅ done | all checks green on PRs #2, #5 |
+| — | GitHub AI (ADR-012): Copilot instructions + `AGENTS.md`, Copilot code review ruleset, coding-agent setup steps, AI issue triage and PR summaries via GitHub Copilot | ✅ done | workflows green; AI jobs need `COPILOT_GITHUB_TOKEN` |
+| 11 | Web dashboard (Next.js 16, React 19, Tailwind 4): dashboard, projects with tabs, runs, agents, approvals, decisions, costs, settings, live events | 🚧 in progress | — |
 | 12 | Security hardening + review | ⏳ | — |
 | 13 | Optimisation: caching, decision reuse | ⏳ | — |
 

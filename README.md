@@ -52,8 +52,8 @@ INTAKE → ANALYZE → PLAN → DESIGN → IMPLEMENT → TEST → REVIEW → SEC
 | [`packages/core`](packages/core) | IO-free domain: contracts, scheduler, DAG, stage planner, stop conditions, budget guard, model registry & router, tool router, context builder, agent runtime & definitions, council, orchestrator pipeline engine, ports |
 | [`packages/db`](packages/db) | PostgreSQL via Drizzle ORM (embedded PGlite for development), migrations, repositories, durable job queue (`FOR UPDATE SKIP LOCKED`, leases, backoff, dead-letter) |
 | [`packages/integrations`](packages/integrations) | Model provider adapters (official SDKs), GitHub adapter (Octokit, Git Data API, checks, webhooks), Docker sandbox, demo responders |
-| `apps/server` *(next)* | Fastify API, auth (GitHub OAuth + RBAC), SSE live events, scheduler and workers |
-| `apps/web` *(next)* | Next.js dashboard: projects, pipelines, agents, decisions, costs, approvals |
+| [`apps/server`](apps/server) | Fastify API, auth (GitHub OAuth + RBAC), SSE live events, scheduler and workers, demo mode |
+| `apps/web` *(in progress)* | Next.js dashboard: projects, pipelines, agents, decisions, costs, approvals |
 
 Read more: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · architecture decisions: [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
@@ -71,6 +71,31 @@ npm test
 
 Configuration lives in environment variables — copy [`.env.example`](.env.example) to `.env`. Without any model
 provider key the system runs in **demo mode** with deterministic mock agents at zero cost.
+
+### Run it
+
+```bash
+npm run dev:server   # API + workers on http://localhost:4000 (embedded database under .data/)
+npm run dev:web      # dashboard on http://localhost:3000
+```
+
+In demo mode (no provider keys, no `GITHUB_TOKEN`) the server seeds demo projects and runs complete pipelines against
+a simulated GitHub and CI. Sign in with the dev login (`ALLOW_DEV_LOGIN=true`, never available in production).
+Add real providers in **Settings → Models / Providers** or via `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GOOGLE_API_KEY`, `OPENAI_COMPATIBLE_BASE_URL`; connect GitHub with `GITHUB_TOKEN` (fine-grained PAT or App token).
+
+## Automation & GitHub AI
+
+| Area | What runs |
+|---|---|
+| Quality gates | CI (typecheck + tests) required on `main`, CodeQL, dependency review, OpenSSF Scorecard |
+| Supply chain | Dependabot security + version updates (minor/patch auto-merge after CI), SHA-pinned third-party actions, secret scanning with push protection |
+| Releases | release-please: version bump, `CHANGELOG.md` and GitHub release from Conventional Commits |
+| Housekeeping | Labeler by changed area, stale bot, issue forms, PR template, CODEOWNERS |
+| GitHub AI | Copilot code review on every PR, Copilot coding agent setup, repository instructions for Copilot, AI issue triage and AI PR summaries |
+
+To activate AI triage and PR summaries, add a repository secret **`COPILOT_GITHUB_TOKEN`** (a personal access token of
+an account with GitHub Copilot). Without it those workflows skip with a notice.
 
 ## Security
 
