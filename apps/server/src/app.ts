@@ -10,6 +10,7 @@ import { loggerOptions, REQUEST_ID_HEADER, requestIdFrom, type LogDestination } 
 import { registerMemberRoutes } from './routes-members';
 import { registerMetricsRoutes } from './routes-metrics';
 import { registerRoutes } from './routes';
+import { registerHealthRoutes } from './routes-health';
 
 export interface AppOptions {
   logger?: boolean;
@@ -59,5 +60,6 @@ export async function buildApp(container: Container, options: AppOptions = {}): 
   await registerRoutes(app, container);
   await registerMemberRoutes(app, container);
   await registerMetricsRoutes(app, container);
+  await registerHealthRoutes(app, container);
   return app;
 }

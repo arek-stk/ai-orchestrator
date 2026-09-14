@@ -48,8 +48,7 @@ export const DEFAULT_TOOL_PERMISSIONS: Readonly<Record<AgentRole, readonly ToolN
   researcher: ['research.web'],
   documentation: [...READ, 'docs.write'],
   devops: [...READ, 'ci.status', 'ci.rerun', 'build.run'],
-  // Release readiness only assesses; the orchestrator itself performs deployments.
-  release: ['repository.read', 'ci.status', 'github.pr.read'],
+  release: ['repository.read', 'ci.status', 'github.pr.read', 'deploy.run'],
 });
 
 export type ToolDenialReason = 'unknown_tool' | 'permission' | 'autonomy' | 'invalid_input' | 'security' | 'approval_required' | 'budget';
