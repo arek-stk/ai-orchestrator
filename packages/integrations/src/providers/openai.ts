@@ -51,24 +51,26 @@ export class OpenAIProvider implements ModelProvider {
       throw mapOpenAIError(error, this.kind);
     }
 
+    const cached = completion.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const usage = {
+      inputTokens: Math.max(0, (completion.usage?.prompt_tokens ?? 0) - cached),
+      outputTokens: completion.usage?.completion_tokens ?? 0,
+      cacheReadTokens: cached,
+      cacheWriteTokens: 0,
+    };
+
     const choice = completion.choices[0];
-    if (!choice) throw new ProviderError('invalid_output', 'response contained no choices', this.kind);
+    if (!choice) throw new ProviderError('invalid_output', 'response contained no choices', this.kind, { usage });
     if (choice.message.refusal || choice.finish_reason === 'content_filter') {
-      throw new ProviderError('refusal', choice.message.refusal ?? 'content filtered', this.kind);
+      throw new ProviderError('refusal', choice.message.refusal ?? 'content filtered', this.kind, { usage });
     }
     if (choice.finish_reason === 'length') {
-      throw new ProviderError('invalid_output', 'output truncated at max tokens', this.kind);
+      throw new ProviderError('invalid_output', 'output truncated at max tokens', this.kind, { usage });
     }
 
-    const cached = completion.usage?.prompt_tokens_details?.cached_tokens ?? 0;
     return {
-      data: parseStructuredText(choice.message.content ?? '', request.schema, this.kind, request.schemaName),
-      usage: {
-        inputTokens: Math.max(0, (completion.usage?.prompt_tokens ?? 0) - cached),
-        outputTokens: completion.usage?.completion_tokens ?? 0,
-        cacheReadTokens: cached,
-        cacheWriteTokens: 0,
-      },
+      data: parseStructuredText(choice.message.content ?? '', request.schema, this.kind, request.schemaName, usage),
+      usage,
       stopReason: choice.finish_reason,
       providerModelId: completion.model,
     };

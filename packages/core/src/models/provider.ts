@@ -47,14 +47,18 @@ export type ProviderErrorKind =
   | 'unknown';
 
 export class ProviderError extends Error {
+  /** Tokens the provider billed before the failure (e.g. truncated or refused output); null if unknown. */
+  readonly usage: TokenUsage | null;
+
   constructor(
     readonly kind: ProviderErrorKind,
     message: string,
     readonly provider: ProviderKind,
-    options: { cause?: unknown } = {},
+    options: { cause?: unknown; usage?: TokenUsage } = {},
   ) {
-    super(message, options);
+    super(message, { cause: options.cause });
     this.name = 'ProviderError';
+    this.usage = options.usage ?? null;
   }
 
   /** Whether trying a different model/provider may succeed. */

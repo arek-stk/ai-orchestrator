@@ -10,6 +10,10 @@ import {
 import { containsSecret, findSecrets, redactSecrets } from './secrets';
 
 describe('normalizeRepoPath', () => {
+  it('rejects colons that would address NTFS alternate data streams', () => {
+    expect(() => normalizeRepoPath('src/report.md:hidden.js')).toThrow(UnsafePathError);
+  });
+
   it('normalises separators and dot segments', () => {
     expect(normalizeRepoPath('src\\app//./index.ts')).toBe('src/app/index.ts');
   });
@@ -47,6 +51,8 @@ describe('globs and branches', () => {
 
   it('validates branch names', () => {
     expect(isValidBranchName('orchestrator/task-abc_1.2')).toBe(true);
+    expect(isValidBranchName('--upload-pack=/tmp/evil.sh')).toBe(false);
+    expect(isValidBranchName('-oProxyCommand')).toBe(false);
     expect(isValidBranchName('bad..name')).toBe(false);
     expect(isValidBranchName('/leading')).toBe(false);
     expect(isValidBranchName('x.lock')).toBe(false);
