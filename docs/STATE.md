@@ -42,7 +42,8 @@ Scout, builder agent in a normal task, autopilot) and at every autonomy level. T
 workflow `uses:`, MCP/Claude/editor configs. It will be the `dependency_addition` approval gate in
 `docs/plans/plugin-scout.md` and is built as a small security change right after PR #12.
 
-1. **Health scan, agent output cache, specialist agents**: PR #12, merge after the concurrent-scan fix.
+1. ✅ **Health scan, agent output cache, specialist agents**: PR #12 merged (rows 17–19), including the concurrent-scan fix.
+1a. 🚧 **`dependency_addition` approval gate**: every new dependency needs human approval (in progress).
 2. **Project Room + MCP server, leases, Kanban, milestones, roadmap**: ADR-030, `docs/plans/project-room.md`.
 3. **Autopilot / away mode**: time- and budget-boxed unattended work. Questions are resolved via decision memory, then research, then an agent council with a critic on a different model; anything risky is parked for the human; there is a return digest. See `docs/plans/autopilot.md`.
 
