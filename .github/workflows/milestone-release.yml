@@ -1,0 +1,85 @@
+name: Milestone release
+
+# Milestones named "vX.Y — …" drive releases (ADR-012 addendum). Once such a milestone has no open items, the
+# release-please PR is retargeted to X.Y.0 if needed and set to squash auto-merge, so required checks and conversation
+# resolution still gate the merge. After the release is published the milestone is closed.
+# Pause: repository variable AUTO_RELEASE=false or the release:hold label on the release PR.
+# pull_request_target is safe here: jobs check out the default branch only and never run pull request code.
+on:
+  issues:
+    types: [closed, reopened, milestoned, demilestoned]
+  pull_request_target:
+    types: [opened, reopened, edited, labeled, closed]
+  milestone:
+    types: [created, edited, opened, closed]
+  schedule:
+    - cron: "41 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Log the plan without changing anything
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  assign:
+    name: Assign milestone
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.milestone == null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: milestone-assign-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/milestone-release
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # Only a milestone:vX.Y label or a closing reference to an issue in an open vX.Y milestone assigns one.
+      - name: Assign milestone from labels or closing references
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/milestone-release/run.mjs assign
+
+  release:
+    name: Evaluate milestones
+    needs: assign
+    if: always() && (github.event_name != 'pull_request_target' || github.event.action == 'closed')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: milestone-release
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      checks: read
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/milestone-release
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Request CI, retarget, auto-merge and close milestones
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node .github/scripts/milestone-release/run.mjs release

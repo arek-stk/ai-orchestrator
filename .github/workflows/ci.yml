@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release PRs are opened by github-actions[bot]; their pull_request runs wait for approval, so the milestone release
+  # workflow dispatches CI for them (workflow_dispatch is exempt from the GITHUB_TOKEN trigger rule).
+  workflow_dispatch:
 
 permissions:
   contents: read
