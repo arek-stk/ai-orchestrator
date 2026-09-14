@@ -19,7 +19,7 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | — | Repository automation (ADR-012): branch protection, CodeQL, dependency review, Scorecard, secret scanning + push protection, Dependabot with auto-merge, release-please, labeler, stale, issue/PR templates, CODEOWNERS | ✅ done | all checks green on PRs #2, #5 |
 | — | GitHub AI (ADR-012): Copilot instructions + `AGENTS.md`, Copilot code review ruleset, coding-agent setup steps, AI issue triage and PR summaries via GitHub Copilot | ✅ done | workflows green; AI jobs need `COPILOT_GITHUB_TOKEN` |
 | 11 | Web dashboard (Next.js 16, React 19, Tailwind 4): dashboard, projects with tabs, runs, agents, approvals, decisions, costs, settings, live events | 🚧 in progress | — |
-| 12 | Security hardening + review | ⏳ | — |
+| 12 | Security review of server, adapters and AI workflows: admin-only project profile (sandbox commands), sandbox installs only via restricted egress network, Secure cookies on HTTPS, deployment assumptions in SECURITY.md; earlier reviews fixed billing of failed attempts, git option injection, NTFS streams, destructive SQL detection, council prompt injection, dev-key race (CodeQL) | ✅ done | PR #8 · regression tests · CodeQL clean |
 | 13 | Optimisation: caching, decision reuse | ⏳ | — |
 
 ## Known constraints on the dev machine

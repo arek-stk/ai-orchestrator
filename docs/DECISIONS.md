@@ -130,3 +130,27 @@ Format: context → decision → consequences → status.
 * **Consequences:** Every change lands through a pull request with green CI; AI output is advisory and never gates or
   merges anything.
 * **Status:** Accepted (2026-09-14)
+
+## ADR-030 — Collaboration and planning: Project Room, MCP access for external AIs, leases, Kanban and roadmap
+* **Context:** The owner wants colleagues and friends — and their own AI assistants (Claude Code, Copilot, Cursor…) —
+  to work on the same repository together with the orchestrator, talk in a shared chat, and plan work on a Kanban
+  board and roadmap. Spec §35 forbids free-running agent-to-agent chatter; the orchestrator must stay the only
+  decision maker.
+* **Decision:**
+  * **One task system, many views.** Kanban board, roadmap and milestones are views and planning tools over the
+    existing tasks (status, priority, DAG, parent/child). Tasks gain assignee (orchestrator | user | external AI),
+    milestone, board position and estimate.
+  * **Project Room** per project: persisted, typed messages with an intent (message, claim, release, handoff,
+    question, objection, status, decision request) and references to tasks, runs, decisions and paths; delivered live
+    over the existing SSE stream. `@orchestrator` commands create tasks, answer status questions and handle approvals
+    for authorised users.
+  * **External AIs join through an MCP server** exposed by the orchestrator, each with its own identity, owner,
+    scopes and project memberships (per-project ACL). Tools: read tasks/context/decisions, claim/release tasks,
+    report progress, post messages, request review, raise objections.
+  * **Leases** on tasks and path globs prevent the orchestrator and humans/external AIs from changing the same code
+    concurrently; the scheduler skips tasks owned by others and pipelines wait on overlapping leases.
+  * **Bounded AI-to-AI interaction:** objections become council inputs with a round limit; the orchestrator decides and
+    records the decision. Chat content from external AIs is untrusted data: it never triggers tools or approvals.
+* **Consequences:** New tables (messages, AI identities, leases, milestones) and task columns; migrations follow the
+  current schema owner's `0001`. Implementation plan: `docs/plans/project-room.md`.
+* **Status:** Accepted (2026-09-14), implementation after the running module PRs are merged
