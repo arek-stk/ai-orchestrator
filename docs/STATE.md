@@ -18,7 +18,7 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | 10 | Server (`apps/server`): env config, AES-GCM secrets, composition root (PGlite/Postgres, provider credentials from env + encrypted settings, demo mode with mock agents and simulated GitHub/CI), GitHub OAuth + dev login, DB sessions (hashed tokens), RBAC, CSRF origin check, rate limits, security headers, REST API (dashboard, projects, tasks, runs, agents, decisions, approvals, memory, costs, models, providers, settings, users, audit), SSE live events with replay, HMAC GitHub webhooks waking CI-waiting runs, worker pool with leases/heartbeat + scheduler tick, demo seed | ✅ done | 9 API tests incl. full pipeline through workers · 175 tests total |
 | — | Repository automation (ADR-012): branch protection, CodeQL, dependency review, Scorecard, secret scanning + push protection, Dependabot with auto-merge, release-please, labeler, stale, issue/PR templates, CODEOWNERS | ✅ done | all checks green on PRs #2, #5 |
 | — | GitHub AI (ADR-012): Copilot instructions + `AGENTS.md`, Copilot code review ruleset, coding-agent setup steps, AI issue triage and PR summaries via GitHub Copilot | ✅ done | workflows green; AI jobs need `COPILOT_GITHUB_TOKEN` |
-| 11 | Web dashboard (Next.js 16, React 19, Tailwind 4): dashboard, projects with tabs, runs, agents, approvals, decisions, costs, settings, live events | 🚧 in progress | — |
+| 11 | Web dashboard (Next.js 16, React 19, Tailwind 4): dashboard, projects with tabs, runs, agents, approvals, decisions, costs, settings, live events; screenshot-based design QA (light/dark), same-origin login redirect | ✅ done | PR #11 · typecheck + production build · CodeQL clean · no UI tests yet |
 | 12 | Security review of server, adapters and AI workflows: admin-only project profile (sandbox commands), sandbox installs only via restricted egress network, Secure cookies on HTTPS, deployment assumptions in SECURITY.md; earlier reviews fixed billing of failed attempts, git option injection, NTFS streams, destructive SQL detection, council prompt injection, dev-key race (CodeQL) | ✅ done | PR #8 · regression tests · CodeQL clean |
 | 12a | Per-project access control (ADR-022): `PROJECT_ACL`, membership API, enforcement on projects, tasks, runs, agent runs, decisions, approvals, memory, costs, dashboard, event history and SSE | ✅ done | `acl.test.ts`: cross-project denial for 13 reads and 10 mutations, role capping, membership audit |
 | 12b | Approval expiry (ADR-023): TTL, blocked run with reason, event + audit, no reopening of finished runs | ✅ done | `approval-expiry.test.ts` (4 tests) |
@@ -30,3 +30,16 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 ## Known constraints on the dev machine
 * Docker daemon not running → sandbox defaults to `SANDBOX=none` (verification delegated to CI).
 * No local PostgreSQL/Redis → embedded PGlite (ADR-002), DB-backed queue (ADR-004).
+
+## Roadmap (approved order)
+Plans are proposals until built; risky or irreversible actions always stay with a human.
+
+1. **Health scan, agent output cache, specialist agents**: PR #12, merge after the concurrent-scan fix.
+2. **Project Room + MCP server, leases, Kanban, milestones, roadmap**: ADR-030, `docs/plans/project-room.md`.
+3. **Autopilot / away mode**: time- and budget-boxed unattended work. Questions are resolved via decision memory, then research, then an agent council with a critic on a different model; anything risky is parked for the human; there is a return digest. See `docs/plans/autopilot.md`.
+
+Proposed, not yet scheduled:
+* **In-app planning assistant** (idea → precise brief → project/milestones/tasks after confirmation): `docs/plans/planning-assistant.md`.
+* **Plugin Scout** (per-project plugin recommendations with trust scoring, never auto-install): `docs/plans/plugin-scout.md`.
+* **Provider accounts per owner** (several Claude/OpenAI accounts, per-account budgets, BYO-AI via MCP): `docs/research/multi-account-ai.md`.
+* Known gaps: web UI tests, project profile editing, model create/delete, audit log page, memberships UI.
