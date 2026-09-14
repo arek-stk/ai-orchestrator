@@ -77,8 +77,7 @@ export function StatusBadge({ tone, label, icon, title, className }: { tone: Ton
       title={title}
       className={cx('inline-flex h-[22px] max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-surface pl-2 pr-2.5 text-xs font-medium text-ink', className)}
     >
-      <StatusDot tone={tone} />
-      <Icon aria-hidden="true" size={12} strokeWidth={2.25} className="shrink-0 text-ink-2" />
+      <Icon aria-hidden="true" size={12} strokeWidth={2.25} className={cx('shrink-0', TONE_TEXT[tone])} />
       <span className="truncate">{label}</span>
     </span>
   );
@@ -477,8 +476,27 @@ export function RelativeTime({ value, className }: { value: string | Date | null
 // Misc
 // ---------------------------------------------------------------------------
 
-export function TextLink({ href, children, className, external, title }: { href: string; children: ReactNode; className?: string; external?: boolean; title?: string }) {
-  const classes = cx('text-link underline-offset-2 transition-[color] duration-150 ease-out hover:underline', className);
+export function TextLink({
+  href,
+  children,
+  className,
+  external,
+  title,
+  variant = 'link',
+}: {
+  href: string;
+  children: ReactNode;
+  className?: string;
+  external?: boolean;
+  title?: string;
+  /** `quiet` reads as body text and only reveals the link on hover (dense lists, feeds). */
+  variant?: 'link' | 'quiet';
+}) {
+  const classes = cx(
+    'underline-offset-2 transition-[color] duration-150 ease-out hover:underline',
+    variant === 'quiet' ? 'text-ink hover:text-link' : 'text-link',
+    className,
+  );
   if (external) {
     return (
       <a href={href} target="_blank" rel="noopener noreferrer" className={classes} title={title}>

@@ -10,7 +10,17 @@ import { api, errorMessage } from '@/lib/api';
 function safeNext(): string {
   if (typeof window === 'undefined') return '/';
   const next = new URLSearchParams(window.location.search).get('next');
-  return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/login') ? next : '/';
+  if (!next) return '/';
+  // Resolve against our own origin and only accept same-origin targets. Prefix checks alone miss
+  // `/\evil.example`, which browsers treat as protocol-relative.
+  let target: URL;
+  try {
+    target = new URL(next, window.location.origin);
+  } catch {
+    return '/';
+  }
+  if (target.origin !== window.location.origin || target.pathname.startsWith('/login')) return '/';
+  return `${target.pathname}${target.search}${target.hash}`;
 }
 
 export default function LoginPage() {

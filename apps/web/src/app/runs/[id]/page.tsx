@@ -12,6 +12,7 @@ import { useAction, useApi } from '@/hooks/use-api';
 import { useLiveEvents } from '@/hooks/use-live-events';
 import { api } from '@/lib/api';
 import { formatDuration, formatTokens, formatUsd, humanize, shortSha } from '@/lib/format';
+import { isUnverified } from '@/lib/event-text';
 import { ACTIVE_RUN_STATUSES, stageStatusTone, verificationTone } from '@/lib/status';
 import type { DomainEvent, ProjectDetailResponse, RunDetailResponse } from '@/lib/types';
 
@@ -151,7 +152,7 @@ export default function RunPage() {
             ) : (
               <ol className="relative">
                 {steps.map((step, index) => {
-                  const tone = stageStatusTone(step.status);
+                  const tone = step.status === 'passed' && isUnverified(step.summary) ? 'warning' : stageStatusTone(step.status);
                   const duration = step.startedAt ? durationBetween(step.startedAt, step.finishedAt) : null;
                   return (
                     <li key={`${step.stage}-${index}`} className="relative flex gap-3 pb-4 last:pb-0">
@@ -280,7 +281,7 @@ export default function RunPage() {
         </Card>
 
         <Card title="Events" description="Run event log, updated live.">
-          <EventFeed events={events} emptyTitle="No events for this run" />
+          <EventFeed events={events} emptyTitle="No events for this run" limit={20} />
         </Card>
       </Refreshable>
     </>

@@ -74,6 +74,13 @@ export function describeEvent(event: DomainEvent): string {
   }
 }
 
+const UNVERIFIED = /could not be executed|unverified|no CI checks|verification: (?:deferred|skipped)/i;
+
+/** True when a "passed" stage or outcome admits it was not actually verified (no sandbox, no CI). */
+export function isUnverified(text: string | null | undefined): boolean {
+  return UNVERIFIED.test(text ?? '');
+}
+
 export function eventTone(event: DomainEvent): Tone {
   const type = event.type;
   if (type.endsWith('.failed') || type === 'budget.exhausted') return 'critical';
@@ -81,8 +88,13 @@ export function eventTone(event: DomainEvent): Tone {
   if (type === 'approval.required') return 'warning';
   if (type === 'pipeline.stage.completed') {
     const status = str(event.payload?.status);
-    return status === 'failed' ? 'critical' : status === 'waiting' ? 'warning' : status === 'skipped' ? 'muted' : 'good';
+    if (status === 'failed') return 'critical';
+    if (status === 'waiting') return 'warning';
+    if (status === 'skipped') return 'muted';
+    // A stage can pass without real verification (no sandbox, no CI): a warning, not a green check.
+    return UNVERIFIED.test(str(event.payload?.summary)) ? 'warning' : 'good';
   }
+  if (type === 'task.completed' && UNVERIFIED.test(str(event.payload?.outcome))) return 'warning';
   if (type.endsWith('.passed') || type.endsWith('.completed') || type === 'github.pr.created') return 'good';
   if (type.endsWith('.started')) return 'accent';
   return 'muted';

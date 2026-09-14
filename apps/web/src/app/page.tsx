@@ -199,7 +199,7 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid items-start gap-6 lg:grid-cols-2">
           <Card title="Agents at work" description="Model calls currently in flight.">
             {d.agents.running.length === 0 ? (
               <EmptyState icon={Bot} title="No agents are working right now." />
@@ -236,7 +236,7 @@ export default function DashboardPage() {
           </Card>
 
           <Card title="Activity" description="Live orchestrator events.">
-            <EventFeed events={feed} projectNames={projectNames} />
+            <EventFeed events={feed} projectNames={projectNames} limit={12} />
           </Card>
         </div>
       </Refreshable>

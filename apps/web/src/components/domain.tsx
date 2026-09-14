@@ -156,6 +156,26 @@ export function stageSteps(run: PipelineRun): StageStep[] {
   return steps;
 }
 
+/** Short labels so all stages fit under the rail without truncation; the full name is in the tooltip. */
+const STAGE_ABBREVIATION: Record<string, string> = {
+  INTAKE: 'INT',
+  ANALYZE: 'ANL',
+  PLAN: 'PLN',
+  DESIGN: 'DSN',
+  IMPLEMENT: 'IMP',
+  TEST: 'TST',
+  REVIEW: 'REV',
+  SECURITY: 'SEC',
+  VERIFY: 'VFY',
+  COMMIT: 'CMT',
+  PUSH: 'PSH',
+  PR: 'PR',
+  CI: 'CI',
+  DEPLOY: 'DPL',
+  MONITOR: 'MON',
+  DEBUG: 'DBG',
+};
+
 const SEGMENT_CLASS: Record<StageStatus, string> = {
   passed: 'bg-accent',
   running: 'bg-accent pulse',
@@ -228,8 +248,11 @@ export function StageRail({ run, size = 'sm', showLabel = true, className }: { r
             >
               <div className={cx('w-full rounded-[2px]', lg ? 'h-2' : 'h-1.5', SEGMENT_CLASS[step.status])} />
               {lg ? (
-                <span className={cx('mt-1.5 truncate font-mono text-[11px] leading-none', isCurrent ? 'font-semibold text-ink' : 'text-ink-2', step.status === 'skipped' && 'line-through decoration-axis')} title={step.stage}>
-                  {step.stage}
+                <span
+                  className={cx('mt-1.5 text-center font-mono text-[10px] leading-none tracking-wide', isCurrent ? 'font-semibold text-ink' : 'text-ink-2', step.status === 'skipped' && 'opacity-60')}
+                  title={step.stage}
+                >
+                  {STAGE_ABBREVIATION[step.stage] ?? step.stage}
                 </span>
               ) : null}
               {active === index ? (
@@ -283,9 +306,12 @@ export function EventFeed({
   live?: boolean;
   limit?: number;
 }) {
-  const shown = limit ? events.slice(0, limit) : events;
+  const [expanded, setExpanded] = useState(false);
+  const shown = limit && !expanded ? events.slice(0, limit) : events;
+  const hidden = events.length - shown.length;
   if (shown.length === 0) return <EmptyState title={emptyTitle} hint="Events appear here as the orchestrator works." />;
   return (
+    <div>
     <ul aria-live={live ? 'polite' : undefined} aria-relevant="additions" className="divide-y divide-line">
       {shown.map((event, index) => {
         const href = eventHref(event);
@@ -296,16 +322,16 @@ export function EventFeed({
             <div className="min-w-0 flex-1">
               <p className="break-words text-[13px] text-ink">
                 {href ? (
-                  <TextLink href={href} className="text-ink hover:text-link">
+                  <TextLink href={href} variant="quiet">
                     {describeEvent(event)}
                   </TextLink>
                 ) : (
                   describeEvent(event)
                 )}
               </p>
-              <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-ink-2">
-                <Mono>{event.type}</Mono>
+              <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-2">
                 {projectName ? <span>{projectName}</span> : null}
+                <span className="font-mono text-[11px] opacity-80">{event.type}</span>
               </p>
             </div>
             <RelativeTime value={event.createdAt} className="tabular shrink-0 text-xs text-ink-2" />
@@ -313,6 +339,16 @@ export function EventFeed({
         );
       })}
     </ul>
+    {limit && events.length > limit ? (
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="mt-3 inline-flex h-8 items-center rounded-md px-2 text-xs font-medium text-ink-2 transition-[color,background-color] duration-150 ease-out hover:bg-surface-2 hover:text-ink"
+      >
+        {expanded ? 'Show fewer events' : `Show ${hidden} more event${hidden === 1 ? '' : 's'}`}
+      </button>
+    ) : null}
+    </div>
   );
 }
 

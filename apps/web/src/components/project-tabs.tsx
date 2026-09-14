@@ -101,8 +101,10 @@ export function OverviewTab({ detail }: DetailProps) {
             <ul className="divide-y divide-line">
               {decisions.slice(0, 5).map((decision) => (
                 <li key={decision.id} className="py-2.5 first:pt-0 last:pb-0">
-                  <p className="text-sm font-medium text-ink">{decision.question}</p>
-                  <p className="mt-0.5 text-sm text-ink-2">{decision.decision}</p>
+                  <p className="text-[13px] font-medium text-ink [text-wrap:pretty]">{decision.decision}</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-ink-2 [text-wrap:pretty]" title={decision.question}>
+                    {decision.question}
+                  </p>
                   <p className="mt-0.5 text-xs text-ink-2">
                     {Math.round(decision.confidence * 100)}% confidence · <RelativeTime value={decision.createdAt} />
                   </p>
@@ -630,7 +632,7 @@ export function LogsTab({ projectId }: { projectId: string }) {
       }
     >
       <ErrorBanner error={history.error} onRetry={() => void history.reload()} />
-      {!history.data && !history.error ? <Loading /> : <EventFeed events={events} emptyTitle="No events for this project" />}
+      {!history.data && !history.error ? <Loading /> : <EventFeed events={events} emptyTitle="No events for this project" limit={30} />}
     </Card>
   );
 }

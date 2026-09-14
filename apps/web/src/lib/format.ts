@@ -100,9 +100,12 @@ export function formatRelative(value: string | Date | null | undefined, now: num
 }
 
 /** WAITING_APPROVAL -> "Waiting approval", project_analyst -> "Project analyst". */
+const ACRONYMS = new Set(['pr', 'ci', 'api', 'id', 'url', 'sha', 'ai', 'ui', 'sql', 'mcp']);
+
 export function humanize(value: string | null | undefined): string {
   if (!value) return '';
-  const text = value.replace(/[_.]+/g, ' ').toLowerCase().trim();
+  const words = value.replace(/[_.]+/g, ' ').toLowerCase().trim().split(/\s+/);
+  const text = words.map((word) => (ACRONYMS.has(word) ? word.toUpperCase() : word)).join(' ');
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
