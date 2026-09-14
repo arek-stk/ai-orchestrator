@@ -1,0 +1,35 @@
+core:
+  - changed-files:
+      - any-glob-to-any-file: packages/core/**
+
+db:
+  - changed-files:
+      - any-glob-to-any-file: packages/db/**
+
+integrations:
+  - changed-files:
+      - any-glob-to-any-file: packages/integrations/**
+
+server:
+  - changed-files:
+      - any-glob-to-any-file: apps/server/**
+
+web:
+  - changed-files:
+      - any-glob-to-any-file: apps/web/**
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**", "**/*.md"]
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: [".github/**", "release-please-config.json", ".release-please-manifest.json"]
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ["**/package.json", "package-lock.json"]
+
+security:
+  - changed-files:
+      - any-glob-to-any-file: ["packages/core/src/security/**", "packages/core/src/tools/**", "packages/integrations/src/sandbox/**", "SECURITY.md"]

@@ -1,0 +1,9 @@
+# Default owner for everything in the repository.
+* @arek-stk
+
+# Security-sensitive areas.
+/packages/core/src/security/ @arek-stk
+/packages/core/src/tools/ @arek-stk
+/packages/integrations/src/sandbox/ @arek-stk
+/.github/ @arek-stk
+/SECURITY.md @arek-stk

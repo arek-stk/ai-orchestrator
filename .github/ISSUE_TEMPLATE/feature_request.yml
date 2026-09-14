@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to achieve, and what is missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Does this touch the architecture or security model?
+      description: Architectural changes need a new ADR in docs/DECISIONS.md.
+      options:
+        - "No"
+        - "Yes – architecture"
+        - "Yes – security model"
+        - "Not sure"
+    validations:
+      required: true

@@ -1,0 +1,64 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Security vulnerabilities must not be reported here** — use the private advisory form (see SECURITY.md).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Orchestrator / pipeline (core)
+        - Agents / council
+        - Model providers / router
+        - Database / job queue
+        - GitHub integration
+        - Sandbox
+        - Server / API
+        - Web dashboard
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure …
+        2. Start task …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      placeholder: e.g. 0.1.0 or commit SHA
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove tokens, API keys and other secrets before pasting.
+      render: shell
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed all secrets from this report.
+          required: true
