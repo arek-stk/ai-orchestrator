@@ -10,3 +10,5 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+# Git worktrees of background coding agents
+.claude/worktrees/
