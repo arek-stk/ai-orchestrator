@@ -21,6 +21,7 @@ export interface OrchestratorToolDeps {
   sandbox: SandboxPort;
   sandboxTimeoutMs: number;
   audit?: (entry: ToolAuditEntry) => void | Promise<void>;
+  sessionGuard?: (sessionId: string) => Promise<string | null>;
 }
 
 function repoOf(ctx: ToolContext, tool: ToolName): RepoCoordinates {
@@ -40,7 +41,7 @@ const Sha = z.string().regex(/^[0-9a-f]{7,64}$/i, 'expected a commit sha');
  * PRs, CI, sandbox runs, deployments — goes through here, so permissions, guards and audit always apply.
  */
 export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter {
-  return new ToolRouter({ audit: deps.audit })
+  return new ToolRouter({ audit: deps.audit, ...(deps.sessionGuard ? { sessionGuard: deps.sessionGuard } : {}) })
     .register({
       name: 'repository.write',
       description: 'Stage a file change in the run workspace',

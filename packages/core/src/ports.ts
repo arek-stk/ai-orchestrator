@@ -74,12 +74,13 @@ export interface TaskRepository {
   addUsage(id: string, costUsd: number, tokens: number): Promise<void>;
 }
 
-export type NewRun = Pick<PipelineRun, 'taskId' | 'projectId' | 'stagePlan' | 'limits'>;
+export type NewRun = Pick<PipelineRun, 'taskId' | 'projectId' | 'stagePlan' | 'limits'> & Partial<Pick<PipelineRun, 'sessionId'>>;
 
 export interface RunFilter {
   projectId?: string;
   taskId?: string;
   statuses?: readonly RunStatus[];
+  sessionId?: string;
   limit?: number;
 }
 
@@ -143,12 +144,13 @@ export interface MemoryRepository {
   search(projectId: string, query: MemoryQuery): Promise<MemoryItem[]>;
 }
 
-export type NewApproval = Pick<Approval, 'projectId' | 'taskId' | 'runId' | 'action' | 'reason' | 'risk' | 'details'>;
+export type NewApproval = Pick<Approval, 'projectId' | 'taskId' | 'runId' | 'action' | 'reason' | 'risk' | 'details'> &
+  Partial<Pick<Approval, 'mode' | 'sessionId' | 'expiresAt'>>;
 
 export interface ApprovalRepository {
   create(approval: NewApproval): Promise<Approval>;
   get(id: string): Promise<Approval | null>;
-  list(filter: { projectId?: string; status?: ApprovalStatus; limit?: number }): Promise<Approval[]>;
+  list(filter: { projectId?: string; status?: ApprovalStatus; sessionId?: string; limit?: number }): Promise<Approval[]>;
   /** Only pending approvals can be decided; returns null if it was already decided. */
   decide(id: string, status: 'approved' | 'rejected' | 'expired', decidedBy: string, comment: string | null): Promise<Approval | null>;
 }

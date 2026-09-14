@@ -109,6 +109,8 @@ export interface PipelineRun {
   currentStage: RunStage | null;
   stagePlan: StagePlanItem[];
   stageStates: Partial<Record<RunStage, StageState>>;
+  /** Autopilot session that started this run (null: started by a human or outside a session). */
+  sessionId: string | null;
   /** Loop-backs (debug, review feedback, stage retries). Normal stage progression does not count. */
   iterations: number;
   debugAttempts: number;

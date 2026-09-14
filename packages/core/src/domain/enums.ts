@@ -60,6 +60,8 @@ export const RUN_STATUSES = [
   'RUNNING',
   'WAITING',
   'PAUSED',
+  /** Waiting for a human decision on a deferred approval (autopilot); holds no concurrency slot. */
+  'PARKED',
   'BLOCKED',
   'SUCCEEDED',
   'FAILED',
@@ -67,6 +69,10 @@ export const RUN_STATUSES = [
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 export const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'BLOCKED']);
+/** Runs that still exist for their task: a task with one of these cannot start another run. */
+export const NON_TERMINAL_RUN_STATUSES: readonly RunStatus[] = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED', 'PARKED'];
+/** Runs that occupy a per-project concurrency slot. PARKED runs wait for a human and free their slot. */
+export const SLOT_HOLDING_RUN_STATUSES: readonly RunStatus[] = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED'];
 
 export const AGENT_ROLES = [
   'orchestrator',

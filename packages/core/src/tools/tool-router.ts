@@ -79,6 +79,8 @@ export interface ToolContext {
   /** Gated actions a human already approved for this run. */
   approvedActions: readonly string[];
   workspace?: ToolWorkspace;
+  /** Autopilot session of the run; the router re-checks it on every call (kill switch). */
+  sessionId?: string | null;
 }
 
 export interface ToolDefinition<A, R> {
@@ -104,12 +106,15 @@ export interface ToolAuditEntry {
   reason?: string;
   durationMs: number;
   costUsd: number;
+  sessionId?: string | null;
 }
 
 export interface ToolRouterOptions {
   permissions?: Partial<Record<AgentRole, readonly ToolName[]>>;
   audit?: (entry: ToolAuditEntry) => void | Promise<void>;
   budgetHeadroomUsd?: (ctx: ToolContext) => Promise<number>;
+  /** Returns a denial detail when the call's autopilot session no longer allows tool use (killed), else null. */
+  sessionGuard?: (sessionId: string) => Promise<string | null>;
   now?: () => number;
 }
 
@@ -149,12 +154,19 @@ export class ToolRouter {
         durationMs: now() - started,
         costUsd: extra.costUsd ?? 0,
         ...(extra.reason ? { reason: extra.reason } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
       });
     };
     const deny = async (reason: ToolDenialReason, detail: string, gatedAction?: GatedAction): Promise<never> => {
       await audit('denied', { reason: `${reason}: ${detail}` });
       throw new ToolDeniedError(name, reason, detail, gatedAction);
     };
+
+    // Kill switch first: a killed autopilot session denies every side effect of its runs, whatever else applies.
+    if (ctx.sessionId && this.options.sessionGuard) {
+      const denial = await this.options.sessionGuard(ctx.sessionId);
+      if (denial) return deny('autonomy', denial);
+    }
 
     const tool = this.tools.get(name);
     if (!tool) return deny('unknown_tool', 'tool is not registered');
