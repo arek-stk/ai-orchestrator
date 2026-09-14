@@ -1,3 +1,4 @@
+import type { AgentCacheEntry, AgentCacheStore } from '../agents/cache';
 import type { IndexedFile } from '../context/context-builder';
 import type { RunStatus, TaskStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
@@ -337,7 +338,22 @@ export function createMemoryStore(clock: Clock = systemClock) {
     replace: async (projectId, files) => void repoFileMap.set(projectId, clone([...files])),
   };
 
-  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger };
+  const cacheMap = new Map<string, AgentCacheEntry & { hits: number }>();
+  const agentCache: AgentCacheStore & { entries: typeof cacheMap } = {
+    entries: cacheMap,
+    get: async (key, at) => {
+      const entry = cacheMap.get(key);
+      if (!entry || (entry.expiresAt && entry.expiresAt.getTime() <= at.getTime())) return null;
+      return clone(entry);
+    },
+    set: async (entry) => void cacheMap.set(entry.key, { ...clone(entry), hits: 0 }),
+    recordHit: async (key) => {
+      const entry = cacheMap.get(key);
+      if (entry) entry.hits++;
+    },
+  };
+
+  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger, agentCache };
 }
 
 export type MemoryStore = ReturnType<typeof createMemoryStore>;

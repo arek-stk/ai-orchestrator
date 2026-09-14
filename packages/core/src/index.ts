@@ -23,6 +23,7 @@ export * from './events/bus';
 export * from './tools/tool-router';
 export * from './context/context-builder';
 export * from './agents/schemas';
+export * from './agents/cache';
 export * from './agents/definitions';
 export * from './agents/runtime';
 export * from './agents/contract';

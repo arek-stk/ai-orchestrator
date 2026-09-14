@@ -14,7 +14,7 @@ export interface EventPayloads {
   'pipeline.stage.started': { stage: RunStage };
   'pipeline.stage.completed': { stage: RunStage; status: StageStatus; summary?: string };
   'agent.started': { agentRunId: string; role: AgentRole; modelId: string };
-  'agent.completed': { agentRunId: string; role: AgentRole; modelId: string; costUsd: number; tokens: number; confidence: number | null };
+  'agent.completed': { agentRunId: string; role: AgentRole; modelId: string; costUsd: number; tokens: number; confidence: number | null; cached?: boolean; savedUsd?: number };
   'agent.failed': { agentRunId: string; role: AgentRole; modelId: string | null; error: string };
   'test.passed': { summary: string };
   'test.failed': { summary: string; fingerprint: string };
@@ -33,6 +33,14 @@ export interface EventPayloads {
   'approval.decided': { approvalId: string; status: 'approved' | 'rejected' | 'expired'; by: string };
   'budget.exhausted': { scope: string; reason: string };
   'scheduler.tick': { selected: number; skipped: number };
+  'project.health_scan.requested': { scanId: string; trigger: 'manual' | 'scheduled' };
+  'project.health_scanned': { scanId: string; healthScore: number; previousScore: number | null; proposalsCreated: number; autoAccepted: number; costUsd: number };
+  'project.health_scan.failed': { scanId: string; error: string };
+  'improvement.proposed': { proposalId: string; title: string; category: string; priority: number };
+  'improvement.accepted': { proposalId: string; taskId: string; auto: boolean; by: string };
+  'improvement.dismissed': { proposalId: string; by: string; reason: string | null };
+  'release.readiness': { verdict: 'ready' | 'not_ready'; blockers: string[] };
+  'research.completed': { memoryKey: string; question: string; confidence: number };
 }
 
 export type EventType = keyof EventPayloads;

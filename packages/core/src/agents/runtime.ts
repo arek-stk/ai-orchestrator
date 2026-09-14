@@ -6,6 +6,7 @@ import { computeCostUsd, estimateTokens } from '../models/registry';
 import { NoEligibleModelError, selectModel, type RoutingDecision } from '../models/router';
 import { addUsage, totalTokens, ZERO_USAGE, type ModelConfig, type TokenUsage } from '../models/types';
 import { systemClock, type AgentRunRepository, type Clock, type EventRecorder, type UsageRepository } from '../ports';
+import { agentCacheKey, agentPromptHash, NON_CACHEABLE_AGENT_KEYS, type AgentCacheStore } from './cache';
 import { renderAgentInput, type AgentDefinition, type AgentInput } from './definitions';
 
 export interface AgentScope {
@@ -30,6 +31,8 @@ export interface AgentRuntimeDeps {
   timeoutMs?: number;
   /** Maximum models tried per call (primary + fallbacks). */
   maxModelAttempts?: number;
+  /** Agent output cache for definitions with `cacheTtlMs` (spec §31). Absent = no caching. */
+  cache?: AgentCacheStore;
 }
 
 export interface RunAgentRequest<S extends z.ZodType> {
@@ -60,6 +63,8 @@ export interface AgentSuccess<T> {
   usage: TokenUsage;
   costUsd: number;
   durationMs: number;
+  /** Served from the agent output cache: no model call, zero cost. */
+  cached?: boolean;
 }
 
 export interface AgentFailure<T> {
@@ -139,6 +144,18 @@ export class AgentRuntime {
     } catch (error) {
       if (error instanceof NoEligibleModelError) return fail('no_model', error.message);
       throw error;
+    }
+
+    // A cache hit costs nothing, so it is served before the budget gate.
+    const cache = this.deps.cache;
+    const cacheTtlMs = definition.cacheTtlMs ?? 0;
+    const cacheKey =
+      cache && cacheTtlMs > 0 && !NON_CACHEABLE_AGENT_KEYS.has(definition.key)
+        ? agentCacheKey({ projectId: scope.projectId, definitionKey: definition.key, modelId: routing.model.id, systemPrompt: definition.systemPrompt, prompt: userPrompt })
+        : null;
+    if (cache && cacheKey) {
+      const hit = await this.serveFromCache(cache, cacheKey, request, role, routing);
+      if (hit) return hit;
     }
 
     const scopes = await this.deps.budgetScopes(scope);
@@ -267,12 +284,91 @@ export class AgentRuntime {
       return fail('verification', 'output failed verification', { agentRunId: agentRun.id, issues, output: data, model, usage, costUsd });
     }
 
+    // Only outputs of the model the key was computed for are cached; a fallback model answers a different key.
+    if (cache && cacheKey && model.id === routing.model.id) {
+      try {
+        await cache.set({
+          key: cacheKey,
+          projectId: scope.projectId,
+          kind: `agent:${definition.key}`,
+          contentHash: agentPromptHash(definition.systemPrompt, userPrompt),
+          value: { output: data, confidence, costUsd, usage, modelId: model.id },
+          expiresAt: new Date(this.clock.now().getTime() + cacheTtlMs),
+        });
+      } catch {
+        // The cache is an optimisation; a failed write must not fail an agent call that already succeeded.
+      }
+    }
+
     await emit({
       type: 'agent.completed',
       ...base,
       payload: { agentRunId: agentRun.id, role, modelId: model.id, costUsd, tokens: totalTokens(usage), confidence },
     });
     return { ok: true, output: data, confidence, agentRunId: agentRun.id, model, routing, usage, costUsd, durationMs };
+  }
+
+  /**
+   * Serves a cached output after re-validating it against the current schema and checks. The hit is recorded
+   * as an agent run and a zero-cost ledger row carrying the saved amount, so dashboards can show savings.
+   */
+  private async serveFromCache<S extends z.ZodType>(
+    cache: AgentCacheStore,
+    key: string,
+    request: RunAgentRequest<S>,
+    role: AgentRole,
+    routing: RoutingDecision,
+  ): Promise<AgentSuccess<z.infer<S>> | null> {
+    const { definition, scope } = request;
+    const entry = await cache.get(key, this.clock.now());
+    if (!entry) return null;
+    const parsed = definition.schema.safeParse(entry.value.output);
+    if (!parsed.success) return null;
+    const data = parsed.data as z.infer<S>;
+    if (definition.verify && definition.verify(data).length > 0) return null;
+
+    const base = { projectId: scope.projectId, taskId: scope.taskId, runId: scope.runId };
+    const { model } = routing;
+    const confidence = readConfidence(data);
+    const agentRun = await this.deps.agentRuns.start({
+      ...base,
+      role,
+      inputSummary: `${definition.name} (cached): ${request.input.task.title}`.slice(0, 500),
+      modelConfigId: model.id,
+      provider: model.provider,
+      modelId: model.modelId,
+    });
+    await this.deps.agentRuns.finish(agentRun.id, {
+      status: 'succeeded',
+      output: data,
+      confidence,
+      usage: { ...ZERO_USAGE },
+      costUsd: 0,
+      toolsUsed: [],
+      durationMs: 0,
+      error: null,
+      modelConfigId: model.id,
+      provider: model.provider,
+      modelId: model.modelId,
+      cacheHit: true,
+    });
+    await this.deps.usage.record({
+      ...base,
+      agentRunId: agentRun.id,
+      provider: model.provider,
+      modelId: model.modelId,
+      usage: { ...ZERO_USAGE },
+      costUsd: 0,
+      cacheHit: true,
+      savedUsd: entry.value.costUsd,
+    });
+    await cache.recordHit(key);
+    await this.deps.events.emit({
+      type: 'agent.completed',
+      ...base,
+      payload: { agentRunId: agentRun.id, role, modelId: model.id, costUsd: 0, tokens: 0, confidence, cached: true, savedUsd: entry.value.costUsd },
+    });
+    return { ok: true, output: data, confidence, agentRunId: agentRun.id, model, routing, usage: { ...ZERO_USAGE }, costUsd: 0, durationMs: 0, cached: true };
   }
 
   /** Writes one ledger entry and adds the spend to project and task totals. */
