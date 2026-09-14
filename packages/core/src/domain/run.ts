@@ -31,6 +31,8 @@ export interface FailureRecord {
   stage: RunStage;
   summary: string;
   fingerprint: string;
+  /** Redacted, truncated failure output handed to the debug agent. */
+  output: string;
   at: string;
 }
 
@@ -42,17 +44,32 @@ export interface RunCheckpoint {
   outputs: Partial<Record<'analysis' | 'plan' | 'design' | 'build' | 'tests' | 'debug' | 'review' | 'security', unknown>>;
   designDecisionId: string | null;
   changeset: FileChange[];
+  /** Incremented on every change-set modification; prevents empty or duplicate commits. */
+  changesetVersion: number;
+  /** The build agent already produced the current change set (avoids re-building after an approval). */
+  buildComplete: boolean;
+  /** Review/security/tool feedback the next IMPLEMENT pass must address. */
+  feedback: string[];
   verification: VerificationReport | null;
   failures: FailureRecord[];
+  /** Stage to continue with after DEBUG. */
+  resumeStage: RunStage | null;
   branch: string | null;
   baseSha: string | null;
+  pendingCommitSha: string | null;
+  pendingCommitVersion: number;
   commitSha: string | null;
+  committedVersion: number;
   prNumber: number | null;
   prUrl: string | null;
   ciAttempts: number;
+  ciPolls: number;
+  deployDispatchedAt: string | null;
   pendingApprovalId: string | null;
   approvedActions: string[];
   notes: string[];
+  /** Final result label, e.g. pr_ready, changes_ready, plan_ready, decomposed, deployed. */
+  outcome: string | null;
 }
 
 export function emptyCheckpoint(): RunCheckpoint {
@@ -60,17 +77,27 @@ export function emptyCheckpoint(): RunCheckpoint {
     outputs: {},
     designDecisionId: null,
     changeset: [],
+    changesetVersion: 0,
+    buildComplete: false,
+    feedback: [],
     verification: null,
     failures: [],
+    resumeStage: null,
     branch: null,
     baseSha: null,
+    pendingCommitSha: null,
+    pendingCommitVersion: 0,
     commitSha: null,
+    committedVersion: 0,
     prNumber: null,
     prUrl: null,
     ciAttempts: 0,
+    ciPolls: 0,
+    deployDispatchedAt: null,
     pendingApprovalId: null,
     approvedActions: [],
     notes: [],
+    outcome: null,
   };
 }
 
@@ -82,6 +109,7 @@ export interface PipelineRun {
   currentStage: RunStage | null;
   stagePlan: StagePlanItem[];
   stageStates: Partial<Record<RunStage, StageState>>;
+  /** Loop-backs (debug, review feedback, stage retries). Normal stage progression does not count. */
   iterations: number;
   debugAttempts: number;
   costUsd: number;

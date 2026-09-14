@@ -68,15 +68,16 @@ export class AnthropicProvider implements ModelProvider {
       throw mapAnthropicError(error);
     }
 
+    const { usage } = result;
     if (result.stopReason === 'refusal') {
-      throw new ProviderError('refusal', 'model declined the request', 'anthropic');
+      throw new ProviderError('refusal', 'model declined the request', 'anthropic', { usage });
     }
     if (result.stopReason === 'max_tokens') {
-      throw new ProviderError('invalid_output', 'output truncated at max_tokens', 'anthropic');
+      throw new ProviderError('invalid_output', 'output truncated at max_tokens', 'anthropic', { usage });
     }
 
     return {
-      data: parseStructuredText(result.text, request.schema, 'anthropic', request.schemaName),
+      data: parseStructuredText(result.text, request.schema, 'anthropic', request.schemaName, usage),
       usage: result.usage,
       stopReason: result.stopReason,
       providerModelId: result.model,

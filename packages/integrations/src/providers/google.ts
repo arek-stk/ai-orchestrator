@@ -49,28 +49,30 @@ export class GoogleProvider implements ModelProvider {
       throw mapGoogleError(error);
     }
 
+    const metadata = response.usageMetadata;
+    const cached = metadata?.cachedContentTokenCount ?? 0;
+    const usage = {
+      inputTokens: Math.max(0, (metadata?.promptTokenCount ?? 0) - cached),
+      // Thinking tokens are billed as output.
+      outputTokens: (metadata?.candidatesTokenCount ?? 0) + (metadata?.thoughtsTokenCount ?? 0),
+      cacheReadTokens: cached,
+      cacheWriteTokens: 0,
+    };
+
     if (response.promptFeedback?.blockReason) {
-      throw new ProviderError('refusal', `prompt blocked: ${response.promptFeedback.blockReason}`, 'google');
+      throw new ProviderError('refusal', `prompt blocked: ${response.promptFeedback.blockReason}`, 'google', { usage });
     }
     const finishReason = response.candidates?.[0]?.finishReason ?? null;
     if (finishReason && REFUSAL_FINISH.has(finishReason)) {
-      throw new ProviderError('refusal', `generation stopped: ${finishReason}`, 'google');
+      throw new ProviderError('refusal', `generation stopped: ${finishReason}`, 'google', { usage });
     }
     if (finishReason === 'MAX_TOKENS') {
-      throw new ProviderError('invalid_output', 'output truncated at max tokens', 'google');
+      throw new ProviderError('invalid_output', 'output truncated at max tokens', 'google', { usage });
     }
 
-    const usage = response.usageMetadata;
-    const cached = usage?.cachedContentTokenCount ?? 0;
     return {
-      data: parseStructuredText(response.text ?? '', request.schema, 'google', request.schemaName),
-      usage: {
-        inputTokens: Math.max(0, (usage?.promptTokenCount ?? 0) - cached),
-        // Thinking tokens are billed as output.
-        outputTokens: (usage?.candidatesTokenCount ?? 0) + (usage?.thoughtsTokenCount ?? 0),
-        cacheReadTokens: cached,
-        cacheWriteTokens: 0,
-      },
+      data: parseStructuredText(response.text ?? '', request.schema, 'google', request.schemaName, usage),
+      usage,
       stopReason: finishReason,
       providerModelId: response.modelVersion ?? model.modelId,
     };

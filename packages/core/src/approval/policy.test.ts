@@ -13,6 +13,11 @@ describe('detectGatedActions', () => {
     expect(gates.map((g) => g.action).sort()).toEqual(['database_migration', 'destructive_data']);
   });
 
+  it('detects conditioned full-table deletes', () => {
+    const gates = detectGatedActions([{ path: 'scripts/cleanup.ts', action: 'create', content: 'await db.execute("DELETE FROM users WHERE 1=1")' }], opts);
+    expect(gates.map((g) => g.action)).toEqual(['destructive_data']);
+  });
+
   it('detects infrastructure, critical paths and secrets', () => {
     const gates = detectGatedActions(
       [

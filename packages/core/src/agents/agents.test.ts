@@ -149,6 +149,23 @@ describe('AgentRuntime', () => {
     expect(h.providers.anthropic.calls).toHaveLength(1);
   });
 
+  it('bills tokens of failed attempts (e.g. truncated output) before falling back', async () => {
+    const billed = { inputTokens: 10_000, outputTokens: 64_000, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    const h = harness({
+      handlers: {
+        anthropic: () => new ProviderError('invalid_output', 'output truncated at max_tokens', 'anthropic', { usage: billed }),
+        openai: () => plan,
+      },
+    });
+    const outcome = await h.runtime.run({ definition: AGENT_DEFINITIONS.plan, input, scope, complexity: 'medium', risk: 'medium' });
+    expect(outcome.ok).toBe(true);
+    const truncatedCost = (10_000 * 1 + 64_000 * 5) / 1_000_000;
+    const servedCost = (10_000 * 3 + 2_000 * 15) / 1_000_000;
+    expect(h.ledger.map((e) => e.modelId)).toEqual(['cheap', 'pricey']);
+    expect(outcome.costUsd).toBeCloseTo(truncatedCost + servedCost);
+    expect(h.projectUsage.reduce((a, b) => a + b, 0)).toBeCloseTo(truncatedCost + servedCost);
+  });
+
   it('does not fall back on invalid requests', async () => {
     const h = harness({
       handlers: { anthropic: () => new ProviderError('invalid_request', 'bad schema', 'anthropic'), openai: () => plan },

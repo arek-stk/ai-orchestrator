@@ -26,6 +26,8 @@ export function normalizeRepoPath(input: string): string {
   for (const segment of segments) {
     if (segment === '..') throw new UnsafePathError(input, 'path traversal');
     if (segment.toLowerCase() === '.git') throw new UnsafePathError(input, 'git internals are not writable');
+    // Colons would address NTFS alternate data streams on Windows hosts.
+    if (segment.includes(':')) throw new UnsafePathError(input, 'colons are not allowed in paths');
   }
   return segments.join('/');
 }
@@ -77,7 +79,8 @@ export function isProtectedBranch(branch: string, defaultBranch: string, protect
   return branch === defaultBranch || matchesAnyGlob(branch, protectedGlobs);
 }
 
-const BRANCH_NAME = /^(?!\/|.*(?:\/\/|\.\.|@\{|\\|\.lock$|\/$|\.$))[A-Za-z0-9._\/-]{1,200}$/;
+// A leading "-" would be parsed as a git option (argument injection).
+const BRANCH_NAME = /^(?![\/-]|.*(?:\/\/|\.\.|@\{|\\|\.lock$|\/$|\.$))[A-Za-z0-9._\/-]{1,200}$/;
 
 export function isValidBranchName(branch: string): boolean {
   return BRANCH_NAME.test(branch);

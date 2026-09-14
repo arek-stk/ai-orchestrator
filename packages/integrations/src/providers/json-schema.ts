@@ -1,11 +1,18 @@
 import { z } from 'zod';
-import { ProviderError, type ProviderKind } from '@orch/core';
+import { ProviderError, type ProviderKind, type TokenUsage } from '@orch/core';
 
 /**
  * Parses a provider's text response as JSON and validates it against the request schema.
  * Tolerates a surrounding ```json fence, which some OpenAI-compatible servers add.
  */
-export function parseStructuredText<T>(text: string, schema: z.ZodType<T>, provider: ProviderKind, schemaName: string): T {
+export function parseStructuredText<T>(
+  text: string,
+  schema: z.ZodType<T>,
+  provider: ProviderKind,
+  schemaName: string,
+  /** Billed usage attached to the error so failed attempts are still accounted for. */
+  usage?: TokenUsage,
+): T {
   const trimmed = text.trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
   const body = fenced ? fenced[1]! : trimmed;
@@ -13,11 +20,11 @@ export function parseStructuredText<T>(text: string, schema: z.ZodType<T>, provi
   try {
     json = JSON.parse(body);
   } catch {
-    throw new ProviderError('invalid_output', `${schemaName}: response is not valid JSON`, provider);
+    throw new ProviderError('invalid_output', `${schemaName}: response is not valid JSON`, provider, { usage });
   }
   const parsed = schema.safeParse(json);
   if (!parsed.success) {
-    throw new ProviderError('invalid_output', `${schemaName}: ${z.prettifyError(parsed.error)}`, provider);
+    throw new ProviderError('invalid_output', `${schemaName}: ${z.prettifyError(parsed.error)}`, provider, { usage });
   }
   return parsed.data;
 }

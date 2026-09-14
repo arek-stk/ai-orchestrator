@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import { requiresApproval } from '../approval/policy';
 import type { AgentRole, AutonomyLevel } from '../domain/enums';
 import type { GatedAction, Project, ProjectCommand } from '../domain/project';
+import type { FileChange } from '../domain/run';
 import { isProtectedBranch, isSensitivePath, isValidBranchName, normalizeRepoPath, UnsafePathError } from '../security/paths';
 import { findSecrets } from '../security/secrets';
 
@@ -64,6 +65,12 @@ export class ToolDeniedError extends Error {
   }
 }
 
+/** The run's staged change set; tools write here instead of the real repository. */
+export interface ToolWorkspace {
+  apply(change: FileChange): void;
+  changes(): FileChange[];
+}
+
 export interface ToolContext {
   project: Pick<Project, 'id' | 'repo' | 'profile' | 'autonomyLevel' | 'settings'>;
   agentRole: AgentRole;
@@ -71,6 +78,7 @@ export interface ToolContext {
   runId: string | null;
   /** Gated actions a human already approved for this run. */
   approvedActions: readonly string[];
+  workspace?: ToolWorkspace;
 }
 
 export interface ToolDefinition<A, R> {

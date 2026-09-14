@@ -31,7 +31,7 @@ const INFRA_PATH = [
   /(^|\/)docker-compose[^/]*\.ya?ml$/i,
 ];
 const PERMISSION_PATH = [/(^|\/)CODEOWNERS$/, /(^|\/)\.github\/settings\.ya?ml$/i];
-const DESTRUCTIVE_SQL = /\b(DROP\s+(TABLE|DATABASE|SCHEMA|COLUMN)|TRUNCATE\s+(TABLE\s+)?\w+|DELETE\s+FROM\s+[\w."]+\s*;)/i;
+const DESTRUCTIVE_SQL = /\b(DROP\s+(TABLE|DATABASE|SCHEMA|COLUMN)|TRUNCATE\s+(TABLE\s+)?\w+|DELETE\s+FROM\s+[\w."]+)/i;
 
 /**
  * Inspects a change set and reports actions that are gated for human approval (spec §16).

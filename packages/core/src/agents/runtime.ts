@@ -4,7 +4,7 @@ import type { AgentRole, Complexity, Risk } from '../domain/enums';
 import { ProviderError, type ProviderResolver } from '../models/provider';
 import { computeCostUsd, estimateTokens } from '../models/registry';
 import { NoEligibleModelError, selectModel, type RoutingDecision } from '../models/router';
-import { totalTokens, ZERO_USAGE, type ModelConfig, type TokenUsage } from '../models/types';
+import { addUsage, totalTokens, ZERO_USAGE, type ModelConfig, type TokenUsage } from '../models/types';
 import { systemClock, type AgentRunRepository, type Clock, type EventRecorder, type UsageRepository } from '../ports';
 import { renderAgentInput, type AgentDefinition, type AgentInput } from './definitions';
 
@@ -56,6 +56,7 @@ export interface AgentSuccess<T> {
   agentRunId: string;
   model: ModelConfig;
   routing: RoutingDecision;
+  /** Total usage of the call, including billed failed attempts on other models. */
   usage: TokenUsage;
   costUsd: number;
   durationMs: number;
@@ -76,9 +77,15 @@ export interface AgentFailure<T> {
 
 export type AgentOutcome<T> = AgentSuccess<T> | AgentFailure<T>;
 
+interface Spend {
+  usage: TokenUsage;
+  costUsd: number;
+}
+
 /**
  * Runs one agent call: budget gate → model routing → provider call with cross-provider fallback →
  * schema + semantic verification → persistence of agent run, usage ledger and events.
+ * Every billed token is accounted for, including attempts that failed after the provider charged.
  */
 export class AgentRuntime {
   private readonly clock: Clock;
@@ -167,6 +174,7 @@ export class AgentRuntime {
     const started = this.clock.now().getTime();
     const chain = [routing.model, ...routing.fallbacks].slice(0, this.deps.maxModelAttempts ?? 3);
     const attemptErrors: string[] = [];
+    let failedSpend: Spend = { usage: { ...ZERO_USAGE }, costUsd: 0 };
     let served: { model: ModelConfig; data: z.infer<S>; usage: TokenUsage } | null = null;
     let lastError: ProviderError | null = null;
 
@@ -195,6 +203,10 @@ export class AgentRuntime {
             : new ProviderError('unknown', error instanceof Error ? error.message : String(error), model.provider, { cause: error });
         lastError = providerError;
         attemptErrors.push(`${model.id}: ${providerError.kind}: ${providerError.message}`);
+        if (providerError.usage) {
+          const spend = await this.recordSpend(model, providerError.usage, base, agentRun.id);
+          failedSpend = { usage: addUsage(failedSpend.usage, spend.usage), costUsd: failedSpend.costUsd + spend.costUsd };
+        }
         if (!providerError.fallbackEligible) break;
       } finally {
         clearTimeout(timer);
@@ -210,8 +222,8 @@ export class AgentRuntime {
         status: 'failed',
         output: null,
         confidence: null,
-        usage: { ...ZERO_USAGE },
-        costUsd: 0,
+        usage: failedSpend.usage,
+        costUsd: failedSpend.costUsd,
         toolsUsed: [],
         durationMs,
         error,
@@ -220,13 +232,14 @@ export class AgentRuntime {
         modelId: routing.model.modelId,
       });
       await emit({ type: 'agent.failed', ...base, payload: { agentRunId: agentRun.id, role, modelId: routing.model.id, error } });
-      return fail(kind, error, { agentRunId: agentRun.id, model: routing.model });
+      return fail(kind, error, { agentRunId: agentRun.id, model: routing.model, usage: failedSpend.usage, costUsd: failedSpend.costUsd });
     }
 
     // 3. Account for spend and verify the output.
-    const { model, data, usage } = served;
-    const costUsd = computeCostUsd(model, usage);
-    const tokens = totalTokens(usage);
+    const { model, data } = served;
+    const servedSpend = await this.recordSpend(model, served.usage, base, agentRun.id);
+    const usage = addUsage(servedSpend.usage, failedSpend.usage);
+    const costUsd = servedSpend.costUsd + failedSpend.costUsd;
     const confidence = readConfidence(data);
     const issues = definition.verify ? definition.verify(data) : [];
     const succeeded = issues.length === 0;
@@ -244,9 +257,6 @@ export class AgentRuntime {
       provider: model.provider,
       modelId: model.modelId,
     });
-    await this.deps.usage.record({ ...base, agentRunId: agentRun.id, provider: model.provider, modelId: model.modelId, usage, costUsd });
-    await this.deps.addProjectUsage(scope.projectId, costUsd, tokens);
-    if (scope.taskId) await this.deps.addTaskUsage(scope.taskId, costUsd, tokens);
 
     if (!succeeded) {
       await emit({
@@ -254,15 +264,38 @@ export class AgentRuntime {
         ...base,
         payload: { agentRunId: agentRun.id, role, modelId: model.id, error: `verification: ${issues.join('; ')}` },
       });
-      return fail('verification', `output failed verification`, { agentRunId: agentRun.id, issues, output: data, model, usage, costUsd });
+      return fail('verification', 'output failed verification', { agentRunId: agentRun.id, issues, output: data, model, usage, costUsd });
     }
 
     await emit({
       type: 'agent.completed',
       ...base,
-      payload: { agentRunId: agentRun.id, role, modelId: model.id, costUsd, tokens, confidence },
+      payload: { agentRunId: agentRun.id, role, modelId: model.id, costUsd, tokens: totalTokens(usage), confidence },
     });
     return { ok: true, output: data, confidence, agentRunId: agentRun.id, model, routing, usage, costUsd, durationMs };
+  }
+
+  /** Writes one ledger entry and adds the spend to project and task totals. */
+  private async recordSpend(
+    model: ModelConfig,
+    usage: TokenUsage,
+    base: { projectId: string; taskId: string | null; runId: string | null },
+    agentRunId: string,
+  ): Promise<Spend> {
+    const costUsd = computeCostUsd(model, usage);
+    const tokens = totalTokens(usage);
+    await this.deps.usage.record({
+      projectId: base.projectId,
+      taskId: base.taskId,
+      agentRunId,
+      provider: model.provider,
+      modelId: model.modelId,
+      usage,
+      costUsd,
+    });
+    await this.deps.addProjectUsage(base.projectId, costUsd, tokens);
+    if (base.taskId) await this.deps.addTaskUsage(base.taskId, costUsd, tokens);
+    return { usage, costUsd };
   }
 }
 
