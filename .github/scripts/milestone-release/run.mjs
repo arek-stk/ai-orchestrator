@@ -1,9 +1,8 @@
 // IO shell around logic.mjs for .github/workflows/milestone-release.yml.
-//   node run.mjs assign   → assign a milestone to the pull request of the triggering event
+//   node run.mjs assign   → assign a milestone to pull request PR_NUMBER (fetched fresh from the API)
 //   node run.mjs release  → request missing CI/release-please runs, then plan and apply milestone releases
-// Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_EVENT_PATH, AUTO_RELEASE, DRY_RUN. Titles, bodies and labels are
+// Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, AUTO_RELEASE, DRY_RUN. Titles, bodies and labels are
 // untrusted: they are only parsed, never executed, and pass through safeLog before they are printed.
-import { appendFile, readFile } from 'node:fs/promises';
 import * as logic from './logic.mjs';
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
@@ -15,10 +14,6 @@ const MAX_PAGES = 5;
 
 function log(message) {
   console.log(logic.safeLog(message));
-}
-
-async function summary(line) {
-  if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${line}\n`);
 }
 
 async function api(method, path, body, { allowNotFound = false } = {}) {
@@ -167,9 +162,9 @@ async function openReleaseAsPr({ parsed, milestone, releasePr, defaultBranch, ma
 }
 
 async function runAssign() {
-  const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
-  const pr = event.pull_request;
-  if (!pr) return log('no pull request in the event');
+  const prNumber = Number(process.env.PR_NUMBER);
+  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return log('PR_NUMBER is not a pull request number');
+  const pr = await api('GET', `${repoPath()}/pulls/${prNumber}`);
   if (pr.milestone) return log(`PR #${pr.number} already has a milestone`);
   const openMilestones = await paginate(`${repoPath()}/milestones?state=open`);
   const referencedIssueMilestoneNumbers = [];
@@ -202,7 +197,7 @@ async function runRelease() {
   );
   if (releaseRuns.total_count === 0) {
     await dispatchWorkflow('release-please.yml', defaultBranch);
-    await summary('Release-please had not run for the default branch head; dispatched it and deferred evaluation.');
+    log('release-please had not run for the default branch head; dispatched it and deferred evaluation');
     return;
   }
 
@@ -220,12 +215,11 @@ async function runRelease() {
   }
 
   const milestones = logic.releaseMilestones(await paginate(`${repoPath()}/milestones?state=open`));
-  await summary(`| Milestone | Status | Reason |\n| --- | --- | --- |`);
   for (const [index, { milestone, parsed }] of milestones.entries()) {
     const release = await api('GET', `${repoPath()}/releases/tags/${parsed.tag}`, undefined, { allowNotFound: true });
     const isTarget = index === 0;
     if (!isTarget && !release) {
-      await summary(`| ${parsed.key} | waiting | a lower release milestone is still open |`);
+      log(`${parsed.key}: waiting (a lower release milestone is still open)`);
       continue;
     }
     let mergedReleasePr = null;
@@ -255,7 +249,6 @@ async function runRelease() {
       autoRelease: process.env.AUTO_RELEASE,
     });
     log(`${parsed.key}: ${plan.status} (${plan.reason})`);
-    await summary(`| ${parsed.key} | ${plan.status} | ${logic.safeLog(plan.reason).replace(/\|/g, '/')} |`);
 
     for (const action of plan.actions) {
       switch (action.type) {

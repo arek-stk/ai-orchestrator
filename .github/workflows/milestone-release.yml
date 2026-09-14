@@ -50,6 +50,7 @@ jobs:
       - name: Assign milestone from labels or closing references
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: node .github/scripts/milestone-release/run.mjs assign
 
   release:
