@@ -8,7 +8,10 @@ import {
   ModelRegistry,
   Orchestrator,
   RepoIndexer,
+  RoomEventProjector,
+  RoomService,
   systemClock,
+  withRoomProjection,
   unavailableSandbox,
   type AgentRole,
   type AgentScope,
@@ -23,6 +26,7 @@ import {
 } from '@orch/core';
 import {
   createAdminRepositories,
+  createConversationRepositories,
   createDatabase,
   createHealthRepositories,
   createRepositories,
@@ -61,6 +65,8 @@ export interface Container {
   orchestrator: Orchestrator;
   /** Health scans, improvement proposals, research and agent cache maintenance. */
   intelligence: Intelligence;
+  /** Project Room (ADR-030): typed conversation messages; orchestrator events are projected into it. */
+  room: RoomService;
   github: GitHubPort;
   githubKind: 'octokit' | 'in-memory';
   sandbox: SandboxPort;
@@ -158,7 +164,16 @@ export async function createContainer(config: ServerConfig, overrides: Container
   const bus = new EventBus((error, event) => console.error(`event handler failed for ${event.type}:`, error));
   const fanout = createFanout(config, db, repos, bus, metrics);
   await fanout.start();
-  const events = new PersistentEventRecorder(repos.events, bus, fanout);
+  const recorder = new PersistentEventRecorder(repos.events, bus, fanout);
+  // The room service emits through the plain recorder so its own room.message events are never projected again.
+  const room = new RoomService({ ...createConversationRepositories(db.db), events: recorder });
+  const projector = new RoomEventProjector({
+    room,
+    tasks: repos.tasks,
+    clock,
+    onError: (error, event) => console.error(`room projection failed for ${event.type}:`, error),
+  });
+  const events = withRoomProjection(recorder, projector);
   const queue = new PgJobQueue(db.db, clock);
 
   let credentials: ProviderCredential[] = [];
@@ -268,6 +283,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
     runtime,
     orchestrator,
     intelligence,
+    room,
     github,
     githubKind,
     sandbox,
