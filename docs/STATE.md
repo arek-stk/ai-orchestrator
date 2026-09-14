@@ -13,7 +13,8 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | 6 | Tool router (permissions → autonomy → validation → security → approval → budget → audit) + context builder (ranking, neighbours, packing, redaction) | ✅ done | 12 tests |
 | 7 | Agent runtime (budget gate, routing, fallback, verification, spend + events), 10 agent definitions, LlmAgent contract, bounded council, demo responders | ✅ done | 20 tests · total 135 tests green |
 | 8 | Orchestrator pipeline engine: durable step state machine, all 15 stage handlers + DEBUG, bounded repair loops, approval gates (change-set detection, high cost, architecture, production deploy), CI infra/code classification, task decomposition into a DAG, decision reuse, analysis cache per commit, blocker analysis, stalled-run recovery, repo indexer, GitHub/Sandbox ports, in-memory GitHub + stores | ✅ done | 11 end-to-end pipeline scenarios · review findings of modules 1–4 fixed |
-| 9 | GitHub integration (Octokit adapter, webhooks) + Docker sandbox | 🚧 in progress | — |
+| 9 | GitHub integration: Octokit adapter (Git Data API commits, PR upsert, checks + workflow runs aggregation with failing-job logs, re-runs, merge, workflow dispatch, rate-limit → wait), HMAC webhook verification + event parsing; Docker sandbox (hardened `docker run`, snapshot + change set workspace, infra vs command failures, timeouts) | ✅ done | adapter tested against a local fake GitHub API; sandbox with fake exec |
+| — | Public repository hygiene: README, MIT license, SECURITY.md, CONTRIBUTING.md, GitHub Actions CI | ✅ done | — |
 | 10 | Server: config, auth/RBAC, API, SSE, scheduler tick, workers | ⏳ | — |
 | 11 | Web dashboard (Next.js) | ⏳ | — |
 | 12 | Security hardening + review | ⏳ | — |

@@ -1,0 +1,88 @@
+# AI Orchestrator
+
+[![CI](https://github.com/arek-stk/ai-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/arek-stk/ai-orchestrator/actions/workflows/ci.yml)
+
+An autonomous, auditable and cost-aware **multi-agent orchestrator** that manages many software projects at once.
+You give it a goal; it understands the project, breaks the goal down, consults the specialists it actually needs,
+builds the change, tests and debugs it, reviews it, and delivers it through GitHub — with hard limits, budgets and
+human approval gates at every risky step.
+
+> **Status:** active development. The orchestration core, database, model layer, agents, pipeline engine, GitHub
+> adapter and sandbox are implemented and tested. The HTTP server and the web dashboard are next.
+> Progress is tracked in [`docs/STATE.md`](docs/STATE.md).
+
+## Why it is different
+
+* **One brain, on-demand specialists.** The orchestrator is the only decision maker. Agents (planner, architect,
+  builder, tester, debugger, reviewer, security, …) are activated per stage and return **schema-validated JSON** —
+  no swarm of agents chatting forever.
+* **Swappable models.** Models are data, providers are adapters: Anthropic, OpenAI, Google Gemini, any
+  OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, OpenRouter, Mistral, DeepSeek, Groq …) and a zero-cost mock.
+  Assign a model per agent role and per project, or let the **cost-aware router** pick the cheapest model that meets
+  the quality floor — with cross-provider failover.
+* **Bounded by design.** Stop conditions (iterations, cost, tokens, runtime, debug attempts), bounded councils,
+  budgets on global / project / task / run level. When a run cannot make progress it is **blocked with an analysis**,
+  not retried forever.
+* **Safe delivery.** Every side effect goes through a single **tool router** (permissions → autonomy level → input
+  validation → security guards → approval gates → budget → audit). Changes land on feature branches via the Git Data
+  API — never on the default branch. Tests run in hardened, offline Docker containers.
+* **Auditable.** Decision memory (question, options, consulted agents, evidence, confidence, cost), failure memory,
+  typed domain events and a full cost ledger.
+
+## Pipeline
+
+```
+INTAKE → ANALYZE → PLAN → DESIGN → IMPLEMENT → TEST → REVIEW → SECURITY → VERIFY → COMMIT → PUSH → PR → CI → DEPLOY → MONITOR
+                                         ▲          │        │          │                                  │
+                                         └── feedback ◄──────┴──────────┘              DEBUG ◄── code failure
+```
+
+* Stages are planned per task and **autonomy level** (0 Observe · 1 Suggest · 2 Execute · 3 Autonomous Development ·
+  4 Autonomous Delivery); skipped stages carry a reason (a README fix needs no security audit).
+* Complex tasks are **decomposed into a dependency graph** of sub-tasks; the scheduler starts only ready tasks, with
+  priority, aging and fairness across projects.
+* CI failures are **classified**: infrastructure problems trigger a re-run, only code failures reach the debug agent.
+* Approval gates: production deploys, database migrations, destructive data changes, large architecture changes,
+  secrets/permissions, critical infrastructure, high cost, low-confidence design decisions.
+
+## Architecture
+
+| Package | Responsibility |
+|---|---|
+| [`packages/core`](packages/core) | IO-free domain: contracts, scheduler, DAG, stage planner, stop conditions, budget guard, model registry & router, tool router, context builder, agent runtime & definitions, council, orchestrator pipeline engine, ports |
+| [`packages/db`](packages/db) | PostgreSQL via Drizzle ORM (embedded PGlite for development), migrations, repositories, durable job queue (`FOR UPDATE SKIP LOCKED`, leases, backoff, dead-letter) |
+| [`packages/integrations`](packages/integrations) | Model provider adapters (official SDKs), GitHub adapter (Octokit, Git Data API, checks, webhooks), Docker sandbox, demo responders |
+| `apps/server` *(next)* | Fastify API, auth (GitHub OAuth + RBAC), SSE live events, scheduler and workers |
+| `apps/web` *(next)* | Next.js dashboard: projects, pipelines, agents, decisions, costs, approvals |
+
+Read more: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · architecture decisions: [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+## Getting started
+
+Requirements: Node.js ≥ 22 (tested with 24). No database or Docker needed for development and tests.
+
+```bash
+git clone https://github.com/arek-stk/ai-orchestrator.git
+cd ai-orchestrator
+npm install
+npm run typecheck
+npm test
+```
+
+Configuration lives in environment variables — copy [`.env.example`](.env.example) to `.env`. Without any model
+provider key the system runs in **demo mode** with deterministic mock agents at zero cost.
+
+## Security
+
+Security is part of the architecture, not an add-on: least-privilege tool permissions per agent role, path and branch
+guards, secret detection and redaction before anything reaches a model or a log, encrypted credentials, HMAC-verified
+webhooks, and sandboxed execution without host shell access. See [`SECURITY.md`](SECURITY.md) for the model and how
+to report vulnerabilities.
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
