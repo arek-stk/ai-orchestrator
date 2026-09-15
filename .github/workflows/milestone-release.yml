@@ -1,8 +1,10 @@
 name: Milestone release
 
 # Milestones named "vX.Y — …" drive releases (ADR-012 addendum). Once such a milestone has no open items, the
-# release-please PR is retargeted to X.Y.0 if needed and set to squash auto-merge, so required checks and conversation
-# resolution still gate the merge. After the release is published the milestone is closed.
+# release-please PR is retargeted to X.Y.0 if needed and made ready to merge; after the release is published the
+# milestone is closed.
+# Safe mode (default): nothing is merged automatically; a maintainer merges the release and Release-As PRs.
+# Full mode: repository variable AUTO_RELEASE_MERGE=true enables squash auto-merge on those PRs.
 # Pause: repository variable AUTO_RELEASE=false or the release:hold label on the release PR.
 # pull_request_target is safe here: jobs check out the default branch only and never run pull request code.
 on:
@@ -11,8 +13,10 @@ on:
   pull_request_target:
     types: [opened, reopened, edited, labeled, closed]
   milestone:
+    # Includes closed on purpose: closed milestones are ignored, so the re-trigger from a close is self-limiting.
     types: [created, edited, opened, closed]
   schedule:
+    # Fallback for bot merges and releases, which trigger no workflows: finishing a release can take up to ~2 hours.
     - cron: "41 */2 * * *"
   workflow_dispatch:
     inputs:
@@ -53,10 +57,46 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: node .github/scripts/milestone-release/run.mjs assign
 
+  # Issue and pull request events can come from anyone. A read-only job decides whether the write-capable release job
+  # may start: a milestone must be involved and the actor needs write, maintain or admin permission.
+  gate:
+    name: Check event trust
+    if: >-
+      github.event_name == 'issues' ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'closed')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/milestone-release
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - id: gate
+        name: Check milestone involvement and actor permission
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          ITEM_MILESTONE: ${{ github.event.issue.milestone.number || github.event.pull_request.milestone.number || '' }}
+          EVENT_MILESTONE: ${{ github.event.milestone.number || '' }}
+        run: node .github/scripts/milestone-release/run.mjs gate
+
   release:
     name: Evaluate milestones
-    needs: assign
-    if: always() && (github.event_name != 'pull_request_target' || github.event.action == 'closed')
+    needs: [assign, gate]
+    if: >-
+      always() && !cancelled() && (
+        github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'milestone' || needs.gate.outputs.proceed == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -78,9 +118,10 @@ jobs:
         with:
           node-version: 24
 
-      - name: Request CI, retarget, auto-merge and close milestones
+      - name: Request CI, retarget, prepare or auto-merge, close milestones
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
+          AUTO_RELEASE_MERGE: ${{ vars.AUTO_RELEASE_MERGE }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: node .github/scripts/milestone-release/run.mjs release

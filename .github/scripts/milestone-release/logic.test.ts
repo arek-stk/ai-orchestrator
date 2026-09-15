@@ -145,21 +145,79 @@ describe('closing references and milestone assignment', () => {
 });
 
 describe('CI dispatch and hold switches', () => {
-  it('dispatches CI once per commit', () => {
-    expect(logic.needsCiDispatch({ checkRuns: [], workflowRuns: [] })).toBe(true);
+  const head = 'aaa111';
+  const decide = (input: Record<string, unknown>) =>
+    logic.ciDispatchDecision({ headSha: head, branchTipSha: head, ...input });
+
+  it('dispatches CI once per head commit', () => {
+    expect(decide({})).toBe('dispatch');
     expect(
-      logic.needsCiDispatch({ workflowRuns: [{ event: 'pull_request', status: 'completed', conclusion: 'action_required' }] }),
-    ).toBe(true);
-    expect(logic.needsCiDispatch({ checkRuns: [{ name: 'Typecheck and test' }] })).toBe(false);
-    expect(logic.needsCiDispatch({ workflowRuns: [{ event: 'workflow_dispatch', status: 'queued' }] })).toBe(false);
+      decide({ workflowRuns: [{ head_sha: head, event: 'pull_request', status: 'completed', conclusion: 'action_required' }] }),
+    ).toBe('dispatch');
+    expect(decide({ checkRuns: [{ name: 'Typecheck and test', head_sha: head }] })).toBe('requested');
+    expect(decide({ workflowRuns: [{ head_sha: head, event: 'workflow_dispatch', status: 'queued' }] })).toBe('requested');
     expect(
-      logic.needsCiDispatch({ workflowRuns: [{ event: 'workflow_dispatch', status: 'completed', conclusion: 'failure' }] }),
-    ).toBe(false);
+      decide({ workflowRuns: [{ head_sha: head, event: 'workflow_dispatch', status: 'completed', conclusion: 'failure' }] }),
+    ).toBe('requested');
     expect(
-      logic.needsCiDispatch({
-        workflowRuns: [{ event: 'workflow_dispatch', status: 'completed', conclusion: 'cancelled' }],
-      }),
-    ).toBe(true);
+      decide({ workflowRuns: [{ head_sha: head, event: 'workflow_dispatch', status: 'completed', conclusion: 'cancelled' }] }),
+    ).toBe('dispatch');
+  });
+
+  it('ignores runs for other commits and aborts when the branch moved', () => {
+    expect(decide({ checkRuns: [{ name: 'Typecheck and test', head_sha: 'other' }] })).toBe('dispatch');
+    expect(decide({ workflowRuns: [{ head_sha: 'other', event: 'workflow_dispatch', status: 'queued' }] })).toBe('dispatch');
+    expect(decide({ branchTipSha: 'moved' })).toBe('stale-head');
+    expect(decide({ branchTipSha: undefined })).toBe('stale-head');
+    expect(logic.ciDispatchDecision({ headSha: undefined, branchTipSha: undefined })).toBe('stale-head');
+  });
+
+  it('counts the required check only for the exact head SHA and its latest run', () => {
+    const run = (id: number, sha: string, conclusion: string) => ({
+      id,
+      name: 'Typecheck and test',
+      head_sha: sha,
+      status: 'completed',
+      conclusion,
+    });
+    expect(logic.requiredCheckSatisfied([run(1, head, 'success')], head)).toBe(true);
+    expect(logic.requiredCheckSatisfied([run(1, 'other', 'success')], head)).toBe(false);
+    expect(logic.requiredCheckSatisfied([run(1, head, 'success'), run(2, head, 'failure')], head)).toBe(false);
+    expect(logic.requiredCheckSatisfied([{ ...run(3, head, 'success'), status: 'in_progress' }], head)).toBe(false);
+    expect(logic.requiredCheckSatisfied([], head)).toBe(false);
+  });
+
+  it('gates issue and pull request events by milestone involvement and actor permission', () => {
+    for (const eventName of ['schedule', 'workflow_dispatch', 'milestone']) {
+      expect(logic.eventGate({ eventName })).toMatchObject({ proceed: true, needsPermission: false });
+    }
+    expect(logic.eventGate({ eventName: 'push' }).proceed).toBe(false);
+    expect(logic.eventGate({ eventName: 'issues', itemMilestone: '', eventMilestone: '' })).toMatchObject({
+      proceed: false,
+      needsPermission: false,
+      reason: 'no milestone involved',
+    });
+    expect(logic.eventGate({ eventName: 'issues', itemMilestone: '1' })).toMatchObject({
+      proceed: false,
+      needsPermission: true,
+    });
+    expect(logic.eventGate({ eventName: 'issues', eventMilestone: '1', actorPermission: 'maintain' }).proceed).toBe(true);
+    expect(logic.eventGate({ eventName: 'pull_request_target', itemMilestone: '1', actorPermission: 'write' }).proceed).toBe(
+      true,
+    );
+    for (const permission of ['triage', 'read', 'none']) {
+      expect(logic.eventGate({ eventName: 'issues', itemMilestone: '1', actorPermission: permission })).toMatchObject({
+        proceed: false,
+        needsPermission: false,
+      });
+    }
+  });
+
+  it('enables full auto-merge only for exactly "true"', () => {
+    expect(logic.isFullAutoMerge('true')).toBe(true);
+    for (const value of [undefined, '', 'TRUE', ' true', 'yes', '1', 'false']) {
+      expect(logic.isFullAutoMerge(value)).toBe(false);
+    }
   });
 
   it('pauses on AUTO_RELEASE=false or the release:hold label', () => {
@@ -221,8 +279,9 @@ describe('planMilestone', () => {
     expect(plan({ currentVersion: '0.4.0' })).toMatchObject({ status: 'blocked', actions: [] });
   });
 
-  it('holds when paused', () => {
+  it('holds when paused, even in full mode', () => {
     expect(plan({ autoRelease: 'false' }).status).toBe('held');
+    expect(plan({ autoRelease: 'false', autoReleaseMerge: 'true' })).toMatchObject({ status: 'held', actions: [] });
     const held = plan({ releasePr: releasePr({ labels: ['autorelease: pending', 'release:hold'], autoMerge: { enabledBy: BOT } }) });
     expect(held).toMatchObject({ status: 'held', actions: [{ type: 'disable-auto-merge', pr: 10 }] });
   });
@@ -231,22 +290,54 @@ describe('planMilestone', () => {
     expect(plan({ releasePr: null })).toMatchObject({ status: 'waiting', actions: [] });
   });
 
-  it('enables auto-merge once when the release PR already targets the milestone version', () => {
-    expect(plan()).toMatchObject({ status: 'releasing', actions: [{ type: 'enable-auto-merge', pr: 10 }] });
-    expect(plan({ releasePr: releasePr({ autoMerge: { enabledBy: 'arek-stk' } }) }).actions).toEqual([]);
+  it('safe mode (variable unset or not exactly true) prepares the release PR without auto-merge', () => {
+    for (const autoReleaseMerge of [undefined, '', 'TRUE', 'yes']) {
+      const result = plan({ autoReleaseMerge });
+      expect(result).toMatchObject({ status: 'awaiting-ci', actions: [{ type: 'comment-release-ready', pr: 10 }] });
+      expect(result.actions.some((a: { type: string }) => a.type.startsWith('enable'))).toBe(false);
+    }
+    expect(plan({ ciSatisfied: true, releasePr: releasePr({ readyCommented: true }) })).toEqual({
+      status: 'ready',
+      reason: 'safe mode: release PR targets 0.4.0 and waits for a maintainer to merge it',
+      actions: [],
+    });
+    // Leftover bot auto-merge from an earlier full-mode run is withdrawn; a human's auto-merge stays.
+    expect(plan({ releasePr: releasePr({ readyCommented: true, autoMerge: { enabledBy: BOT } }) }).actions).toEqual([
+      { type: 'disable-auto-merge', pr: 10 },
+    ]);
+    expect(plan({ releasePr: releasePr({ readyCommented: true, autoMerge: { enabledBy: 'arek-stk' } }) }).actions).toEqual([]);
+  });
+
+  it('full mode (exactly true) enables auto-merge once when the release PR targets the milestone version', () => {
+    expect(plan({ autoReleaseMerge: 'true' })).toMatchObject({
+      status: 'releasing',
+      actions: [{ type: 'enable-auto-merge', pr: 10 }],
+    });
+    expect(plan({ autoReleaseMerge: 'true', releasePr: releasePr({ autoMerge: { enabledBy: 'arek-stk' } }) }).actions).toEqual(
+      [],
+    );
   });
 
   it('retargets a release PR with another version through a single Release-As PR', () => {
     const other = releasePr({ title: 'chore(main): release 0.3.0' });
-    expect(plan({ releasePr: other })).toMatchObject({ status: 'retargeting', actions: [{ type: 'open-release-as-pr' }] });
-    expect(plan({ releasePr: other, releaseAsPr: { number: 17, state: 'open', merged: false, autoMerge: null } })).toMatchObject({
+    const openReleaseAs = { number: 17, state: 'open', merged: false, autoMerge: null };
+    expect(plan({ releasePr: other })).toMatchObject({
+      status: 'retargeting',
+      actions: [{ type: 'open-release-as-pr', autoMerge: false }],
+    });
+    expect(plan({ releasePr: other, autoReleaseMerge: 'true' }).actions).toEqual([
+      { type: 'open-release-as-pr', autoMerge: true },
+    ]);
+    expect(plan({ releasePr: other, releaseAsPr: openReleaseAs })).toMatchObject({ status: 'retargeting', actions: [] });
+    expect(plan({ releasePr: other, releaseAsPr: openReleaseAs, autoReleaseMerge: 'true' })).toMatchObject({
       status: 'retargeting',
       actions: [{ type: 'enable-release-as-auto-merge', pr: 17 }],
     });
-    expect(
-      plan({ releasePr: other, releaseAsPr: { number: 17, state: 'open', merged: false, autoMerge: { enabledBy: BOT } } })
-        .actions,
-    ).toEqual([]);
+    const botMerged = { ...openReleaseAs, autoMerge: { enabledBy: BOT } };
+    expect(plan({ releasePr: other, releaseAsPr: botMerged, autoReleaseMerge: 'true' }).actions).toEqual([]);
+    expect(plan({ releasePr: other, releaseAsPr: botMerged }).actions).toEqual([
+      { type: 'disable-release-as-auto-merge', pr: 17 },
+    ]);
   });
 
   it('stops instead of looping when a Release-As PR was merged or vetoed', () => {

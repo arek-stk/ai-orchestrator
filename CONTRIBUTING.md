@@ -44,12 +44,18 @@ npm test            # vitest, no database or Docker required (embedded PGlite, i
 * Roadmap milestones are named `vX.Y — <theme>` (for example `v0.5 — Project Room`); unscheduled work lives in
   `Backlog — proposed`. Put issues and PRs into the milestone they deliver; a PR without one gets it from a
   `milestone:vX.Y` label or from `Closes #N` pointing at an issue in that milestone.
-* When the lowest open `vX.Y` milestone has no open items, the **Milestone release** workflow releases `X.Y.0`: it
-  retargets the release PR with a `Release-As` PR if needed and enables squash auto-merge. The merge still waits for
-  the required checks and resolved conversations; afterwards the milestone is closed with a link to the release.
-* You can always merge a release PR by hand. To pause the automation, add the `release:hold` label to the release PR
-  or set the repository variable `AUTO_RELEASE` to `false`; close a Release-As PR to veto it. Run the workflow
-  manually with `dry_run` to see its plan. Details: ADR-012 addendum in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+* When the lowest open `vX.Y` milestone has no open items, the **Milestone release** workflow prepares `X.Y.0`: it
+  retargets the release PR with a `Release-As` PR if needed, runs CI on both and comments when the release PR is
+  ready. After the release is published it adds the milestone link to the notes and closes the milestone.
+* **Safe mode (default):** nothing is merged automatically. A maintainer merges the Release-As PR (if any) and then
+  the release PR.
+* **Full mode:** set the repository variable `AUTO_RELEASE_MERGE` to exactly `true` and the workflow enables squash
+  auto-merge on those PRs. `main` has no required reviews and does not enforce admins, so the bot then lands release
+  commits without a human; prefer safe mode, or add required reviews / a dedicated GitHub App first.
+* To pause everything, add the `release:hold` label to the release PR or set the repository variable `AUTO_RELEASE`
+  to `false`; close a Release-As PR to veto it. Run the workflow manually with `dry_run` to see its plan. Bot merges
+  trigger no workflows, so finishing a release can take up to ~2 hours (scheduled fallback). Details: ADR-012
+  addendum in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Automation
 

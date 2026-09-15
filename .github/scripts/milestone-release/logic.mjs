@@ -9,6 +9,8 @@ export const CI_CHECK_NAME = 'Typecheck and test';
 export const BOT_LOGIN = 'github-actions[bot]';
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const TRUSTED_EVENTS = ['schedule', 'workflow_dispatch', 'milestone'];
+const WRITE_ROLES = ['admin', 'maintain', 'write'];
 
 /** `v0.4 — Project Room` → version 0.4.0. Only `vX.Y` followed by whitespace or the end qualifies. */
 export function parseMilestoneVersion(title) {
@@ -54,13 +56,47 @@ export function isAutomationBranch(ref) {
   return typeof ref === 'string' && (ref.startsWith(RELEASE_BRANCH_PREFIX) || ref.startsWith(RELEASE_AS_BRANCH_PREFIX));
 }
 
-/** Pause switches: repository variable `AUTO_RELEASE=false` or the `release:hold` label on the release PR. */
+/** Global pause: repository variable `AUTO_RELEASE=false` or the `release:hold` label on the release PR. */
 export function holdReason({ autoRelease, releasePrLabels = [] }) {
   if (typeof autoRelease === 'string' && autoRelease.trim().toLowerCase() === 'false') {
     return 'repository variable AUTO_RELEASE is false';
   }
   if (releasePrLabels.includes(HOLD_LABEL)) return `release PR has the ${HOLD_LABEL} label`;
   return null;
+}
+
+/**
+ * Safe mode is the default: the automation never enables auto-merge unless the repository variable
+ * `AUTO_RELEASE_MERGE` is exactly `true`.
+ */
+export function isFullAutoMerge(autoReleaseMerge) {
+  return autoReleaseMerge === 'true';
+}
+
+/**
+ * Whether an event may start the write-capable release job. Schedule, manual dispatch (write access required) and
+ * milestone events (write access required) are trusted. Issue and pull request events from the public only count when
+ * a milestone is involved and the actor has write, maintain or admin permission; everything else waits for the
+ * schedule. `needsPermission` asks the caller to look the actor up and call again.
+ */
+export function eventGate({ eventName, itemMilestone, eventMilestone, actorPermission }) {
+  if (TRUSTED_EVENTS.includes(eventName)) {
+    return { proceed: true, needsPermission: false, reason: `${eventName} events are trusted` };
+  }
+  if (eventName !== 'issues' && eventName !== 'pull_request_target') {
+    return { proceed: false, needsPermission: false, reason: `unexpected event ${eventName}` };
+  }
+  const present = (value) => typeof value === 'string' ? value.trim() !== '' : value != null;
+  if (!present(itemMilestone) && !present(eventMilestone)) {
+    return { proceed: false, needsPermission: false, reason: 'no milestone involved' };
+  }
+  if (actorPermission == null) {
+    return { proceed: false, needsPermission: true, reason: 'actor permission unknown' };
+  }
+  if (!WRITE_ROLES.includes(actorPermission)) {
+    return { proceed: false, needsPermission: false, reason: 'actor has no write access; the schedule re-evaluates' };
+  }
+  return { proceed: true, needsPermission: false, reason: `actor has ${actorPermission} access` };
 }
 
 /**
@@ -105,17 +141,38 @@ export function pickMilestoneForPr({ pr, openMilestones, referencedIssueMileston
 
 /**
  * CI must be requested for bot-created PRs: their `pull_request` runs wait for approval (`action_required`) and never
- * report the required check. Dispatch once per commit; failed or running CI is never re-dispatched automatically.
+ * report the required check. Dispatch runs by branch name, so the branch tip is re-read right before dispatching and a
+ * moved branch aborts (the next run re-evaluates). Only runs for the evaluated head SHA count. Failed or running CI is
+ * never re-dispatched automatically.
+ * Returns 'requested' | 'stale-head' | 'dispatch'.
  */
-export function needsCiDispatch({ checkRuns = [], workflowRuns = [] }) {
-  if (checkRuns.some((run) => run.name === CI_CHECK_NAME)) return false;
-  return !workflowRuns.some(
-    (run) => run.event === 'workflow_dispatch' && !(run.status === 'completed' && run.conclusion === 'cancelled'),
+export function ciDispatchDecision({ headSha, branchTipSha, checkRuns = [], workflowRuns = [] }) {
+  if (checkRuns.some((run) => run.name === CI_CHECK_NAME && run.head_sha === headSha)) return 'requested';
+  const dispatched = workflowRuns.some(
+    (run) =>
+      run.head_sha === headSha &&
+      run.event === 'workflow_dispatch' &&
+      !(run.status === 'completed' && run.conclusion === 'cancelled'),
   );
+  if (dispatched) return 'requested';
+  if (!headSha || branchTipSha !== headSha) return 'stale-head';
+  return 'dispatch';
+}
+
+/** The latest required check run for exactly this head SHA succeeded. */
+export function requiredCheckSatisfied(checkRuns = [], headSha) {
+  const latest = checkRuns
+    .filter((run) => run.name === CI_CHECK_NAME && run.head_sha === headSha)
+    .sort((a, b) => b.id - a.id)[0];
+  return Boolean(latest && latest.status === 'completed' && latest.conclusion === 'success');
 }
 
 export function milestoneMarker(parsed) {
   return `<!-- milestone-release:${parsed.key} -->`;
+}
+
+export function readyMarker(parsed) {
+  return `<!-- milestone-release:ready:${parsed.key} -->`;
 }
 
 /** Release notes stay release-please's changelog; the milestone link is appended once. */
@@ -145,15 +202,18 @@ function botAutoMerge(pr) {
  *   milestone: { number, title, state, open_issues, closed_issues, html_url },
  *   currentVersion: manifest version on the default branch,
  *   release: published release for the milestone tag or null,
- *   releasePr: open release-please PR { number, title, labels, autoMerge: { enabledBy } | null } or null,
+ *   releasePr: open release-please PR { number, title, labels, autoMerge: { enabledBy } | null, readyCommented } or null,
+ *   ciSatisfied: required check passed for the release PR head SHA,
  *   mergedReleasePr: merged release PR for the milestone version { number, commented } or null,
  *   releaseAsPr: PR from the release-as branch { number, state, merged, autoMerge } or null,
- *   autoRelease: value of the AUTO_RELEASE variable,
+ *   autoRelease: value of the AUTO_RELEASE variable (global pause),
+ *   autoReleaseMerge: value of the AUTO_RELEASE_MERGE variable (full mode only when exactly 'true'),
  * }
  * Returns { status, reason, actions: [{ type, ... }] }.
  */
 export function planMilestone(state) {
   const { milestone, currentVersion, release, releasePr, mergedReleasePr, releaseAsPr, autoRelease } = state;
+  const fullAuto = isFullAutoMerge(state.autoReleaseMerge);
   const parsed = parseMilestoneVersion(milestone.title);
   if (!parsed) return { status: 'ignored', reason: 'not a vX.Y release milestone', actions: [] };
   if (milestone.state !== 'open') return { status: 'ignored', reason: 'milestone is closed', actions: [] };
@@ -202,6 +262,15 @@ export function planMilestone(state) {
 
   const prVersion = parseReleasePrVersion(releasePr.title);
   if (prVersion === parsed.version) {
+    if (!fullAuto) {
+      const actions = [...disableBotAutoMerge];
+      if (!releasePr.readyCommented) actions.push({ type: 'comment-release-ready', pr: releasePr.number });
+      return {
+        status: state.ciSatisfied ? 'ready' : 'awaiting-ci',
+        reason: `safe mode: release PR targets ${parsed.version} and waits for a maintainer to merge it`,
+        actions,
+      };
+    }
     const actions = releasePr.autoMerge ? [] : [{ type: 'enable-auto-merge', pr: releasePr.number }];
     return { status: 'releasing', reason: `release PR targets ${parsed.version}; merges once required checks pass`, actions };
   }
@@ -222,13 +291,17 @@ export function planMilestone(state) {
   }
   if (releaseAsPr) {
     const actions = [...disableBotAutoMerge];
-    if (!releaseAsPr.autoMerge) actions.push({ type: 'enable-release-as-auto-merge', pr: releaseAsPr.number });
-    return { status: 'retargeting', reason: `waiting for Release-As PR #${releaseAsPr.number}`, actions };
+    if (fullAuto && !releaseAsPr.autoMerge) actions.push({ type: 'enable-release-as-auto-merge', pr: releaseAsPr.number });
+    if (!fullAuto && botAutoMerge(releaseAsPr)) actions.push({ type: 'disable-release-as-auto-merge', pr: releaseAsPr.number });
+    const reason = fullAuto
+      ? `waiting for Release-As PR #${releaseAsPr.number}`
+      : `safe mode: Release-As PR #${releaseAsPr.number} waits for a maintainer to merge it`;
+    return { status: 'retargeting', reason, actions };
   }
   return {
     status: 'retargeting',
     reason: `release PR targets ${prVersion ?? 'an unknown version'}; requesting Release-As ${parsed.version}`,
-    actions: [...disableBotAutoMerge, { type: 'open-release-as-pr' }],
+    actions: [...disableBotAutoMerge, { type: 'open-release-as-pr', autoMerge: fullAuto }],
   };
 }
 

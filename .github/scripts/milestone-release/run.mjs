@@ -1,8 +1,11 @@
 // IO shell around logic.mjs for .github/workflows/milestone-release.yml.
+//   node run.mjs gate     → decide whether an issue/PR event may start the write-capable release job (read-only token)
 //   node run.mjs assign   → assign a milestone to pull request PR_NUMBER (fetched fresh from the API)
 //   node run.mjs release  → request missing CI/release-please runs, then plan and apply milestone releases
-// Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, AUTO_RELEASE, DRY_RUN. Titles, bodies and labels are
-// untrusted: they are only parsed, never executed, and pass through safeLog before they are printed.
+// Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, EVENT_NAME, ACTOR, ITEM_MILESTONE, EVENT_MILESTONE,
+// AUTO_RELEASE, AUTO_RELEASE_MERGE, DRY_RUN. Titles, bodies and labels are untrusted: they are only parsed, never
+// executed, and pass through safeLog before they are printed.
+import { appendFile } from 'node:fs/promises';
 import * as logic from './logic.mjs';
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
@@ -10,6 +13,7 @@ const TOKEN = process.env.GITHUB_TOKEN;
 const REPOSITORY = process.env.GITHUB_REPOSITORY ?? '';
 const [OWNER] = REPOSITORY.split('/');
 const DRY_RUN = process.env.DRY_RUN === 'true';
+const FULL_AUTO = logic.isFullAutoMerge(process.env.AUTO_RELEASE_MERGE);
 const MAX_PAGES = 5;
 
 function log(message) {
@@ -33,7 +37,6 @@ async function api(method, path, body, { allowNotFound = false } = {}) {
   if (!response.ok) {
     const error = new Error(`${method} ${path.split('?')[0]} failed with HTTP ${response.status}: ${logic.safeLog(text)}`);
     error.status = response.status;
-    error.responseText = text;
     throw error;
   }
   return text ? JSON.parse(text) : null;
@@ -75,22 +78,33 @@ async function dispatchWorkflow(file, ref) {
   );
 }
 
-/** Bot-created PRs get no CI run of their own (it waits for approval); dispatch CI once for their head commit. */
+/**
+ * Bot-created PRs get no CI run of their own (it waits for approval); dispatch CI once for their head commit.
+ * Returns whether the required check already passed for exactly that head SHA.
+ */
 async function ensureCi(pr) {
   const sha = encodeURIComponent(pr.headSha);
   const checks = await api(
     'GET',
-    `${repoPath()}/commits/${sha}/check-runs?check_name=${encodeURIComponent(logic.CI_CHECK_NAME)}`,
+    `${repoPath()}/commits/${sha}/check-runs?check_name=${encodeURIComponent(logic.CI_CHECK_NAME)}&per_page=50`,
   );
   const runs = await api('GET', `${repoPath()}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=20`);
-  if (logic.needsCiDispatch({ checkRuns: checks.check_runs, workflowRuns: runs.workflow_runs })) {
-    await dispatchWorkflow('ci.yml', pr.headRef);
-  } else {
-    log(`CI already requested for PR #${pr.number}`);
-  }
+  // Dispatch works by branch name: re-read the tip last so a moved branch is never tested in place of the evaluated head.
+  const tip = await api('GET', `${repoPath()}/git/ref/heads/${pr.headRef}`, undefined, { allowNotFound: true });
+  const decision = logic.ciDispatchDecision({
+    headSha: pr.headSha,
+    branchTipSha: tip?.object?.sha,
+    checkRuns: checks.check_runs,
+    workflowRuns: runs.workflow_runs,
+  });
+  if (decision === 'dispatch') await dispatchWorkflow('ci.yml', pr.headRef);
+  else if (decision === 'stale-head') log(`PR #${pr.number} head moved since evaluation; CI dispatch deferred to the next run`);
+  else log(`CI already requested for PR #${pr.number}`);
+  return logic.requiredCheckSatisfied(checks.check_runs, pr.headSha);
 }
 
 async function enableAutoMerge(pr, { commitHeadline, commitBody } = {}) {
+  if (!FULL_AUTO) throw new Error('auto-merge requested outside full mode');
   const mutation = `mutation($id: ID!, $oid: GitObjectID, $headline: String, $body: String) {
     enablePullRequestAutoMerge(input: { pullRequestId: $id, mergeMethod: SQUASH, expectedHeadOid: $oid,
       commitHeadline: $headline, commitBody: $body }) { clientMutationId }
@@ -100,7 +114,7 @@ async function enableAutoMerge(pr, { commitHeadline, commitBody } = {}) {
       await graphql(mutation, { id: pr.nodeId, oid: pr.headSha, headline: commitHeadline ?? null, body: commitBody ?? null });
     } catch (error) {
       // Auto-merge cannot be enabled on a PR that is already mergeable; merge it through the REST API instead, which
-      // still enforces branch protection.
+      // still enforces branch protection and the expected head SHA.
       if (!/clean status/i.test(String(error.message))) throw error;
       await api('PUT', `${repoPath()}/pulls/${pr.number}/merge`, {
         merge_method: 'squash',
@@ -119,7 +133,7 @@ async function disableAutoMerge(pr) {
   );
 }
 
-async function openReleaseAsPr({ parsed, milestone, releasePr, defaultBranch, mainSha }) {
+async function openReleaseAsPr({ parsed, milestone, releasePr, defaultBranch, mainSha, autoMerge }) {
   const branch = logic.releaseAsBranch(parsed);
   const message = logic.releaseAsCommitMessage(parsed);
   const headline = message.split('\n')[0];
@@ -143,22 +157,54 @@ async function openReleaseAsPr({ parsed, milestone, releasePr, defaultBranch, ma
       return commit.sha;
     });
   }
+  const mergeLine = autoMerge
+    ? 'It merges automatically once the required checks pass (`AUTO_RELEASE_MERGE=true`).'
+    : 'Safe mode: a maintainer merges it (squash) once the required checks pass; the release PR then updates.';
   const body = [
     `Milestone [${parsed.key}](${milestone.html_url}) is complete, but the release PR #${releasePr.number} targets a different version.`,
     '',
     `This PR adds an empty commit with a \`Release-As: ${parsed.version}\` footer so release-please retargets the release PR (ADR-012 addendum).`,
-    'It merges automatically once the required checks pass.',
+    mergeLine,
     '',
     `* Veto: close this PR (the automation will not reopen it).`,
-    `* Pause all automatic releases: add the \`${logic.HOLD_LABEL}\` label to the release PR or set the repository variable \`AUTO_RELEASE=false\`.`,
+    `* Pause all automatic release work: add the \`${logic.HOLD_LABEL}\` label to the release PR or set the repository variable \`AUTO_RELEASE=false\`.`,
   ].join('\n');
   const created = await write(`open the Release-As ${parsed.version} PR from ${branch}`, () =>
     api('POST', `${repoPath()}/pulls`, { title: headline, head: branch, base: defaultBranch, body }),
   );
   if (!created) return;
   const pr = logic.normalizePr(created);
-  await enableAutoMerge({ ...pr, headSha }, { commitHeadline: headline, commitBody: `Release-As: ${parsed.version}` });
+  if (autoMerge) {
+    await enableAutoMerge({ ...pr, headSha }, { commitHeadline: headline, commitBody: `Release-As: ${parsed.version}` });
+  }
   await ensureCi({ ...pr, headSha });
+}
+
+async function runGate() {
+  const input = {
+    eventName: process.env.EVENT_NAME,
+    itemMilestone: process.env.ITEM_MILESTONE,
+    eventMilestone: process.env.EVENT_MILESTONE,
+    actorPermission: null,
+  };
+  let decision = logic.eventGate(input);
+  if (decision.needsPermission) {
+    const actor = process.env.ACTOR ?? '';
+    let permission = 'none';
+    if (/^[A-Za-z0-9-]{1,39}$/.test(actor)) {
+      try {
+        const result = await api('GET', `${repoPath()}/collaborators/${actor}/permission`, undefined, { allowNotFound: true });
+        permission = result?.role_name ?? result?.permission ?? 'none';
+      } catch (error) {
+        log(`permission lookup failed: ${error.message}`);
+      }
+    }
+    decision = logic.eventGate({ ...input, actorPermission: permission });
+  }
+  log(`event gate: ${decision.proceed ? 'proceed' : 'skip'} (${decision.reason})`);
+  if (process.env.GITHUB_OUTPUT) {
+    await appendFile(process.env.GITHUB_OUTPUT, decision.proceed ? 'proceed=true\n' : 'proceed=false\n');
+  }
 }
 
 async function runAssign() {
@@ -189,8 +235,10 @@ async function runRelease() {
   const branchRef = await api('GET', `${repoPath()}/git/ref/heads/${encodeURIComponent(defaultBranch)}`);
   const mainSha = branchRef.object.sha;
   if (DRY_RUN) log('dry run: no changes will be made');
+  log(FULL_AUTO ? 'mode: full auto-merge (AUTO_RELEASE_MERGE=true)' : 'mode: safe (no auto-merge; a maintainer merges)');
 
-  // Merges and releases made with GITHUB_TOKEN trigger no push workflows; make sure release-please saw the head.
+  // Merges and releases made with GITHUB_TOKEN trigger no push workflows; make sure release-please saw the head. This
+  // is self-limiting: release-please hands back to this workflow, which then finds a run for the head and stops here.
   const releaseRuns = await api(
     'GET',
     `${repoPath()}/actions/workflows/release-please.yml/runs?head_sha=${encodeURIComponent(mainSha)}&per_page=5`,
@@ -209,9 +257,10 @@ async function runRelease() {
   const openPulls = await paginate(`${repoPath()}/pulls?state=open`);
   const releasePr = logic.selectReleasePr(openPulls, REPOSITORY);
 
+  const ciSatisfied = new Map();
   for (const pull of openPulls) {
     if (!logic.isTrustedAutomationPr(pull, REPOSITORY) || !logic.isAutomationBranch(pull.head.ref)) continue;
-    await ensureCi(logic.normalizePr(pull));
+    ciSatisfied.set(pull.number, await ensureCi(logic.normalizePr(pull)));
   }
 
   const milestones = logic.releaseMilestones(await paginate(`${repoPath()}/milestones?state=open`));
@@ -233,30 +282,39 @@ async function runRelease() {
       }
     }
     let releaseAsPr = null;
+    let targetReleasePr = null;
     if (isTarget) {
       const branch = logic.releaseAsBranch(parsed);
       const pulls = await api('GET', `${repoPath()}/pulls?state=all&head=${encodeURIComponent(`${OWNER}:${branch}`)}`);
       releaseAsPr = logic.selectReleaseAsPr(pulls, parsed, REPOSITORY);
+      if (releasePr) {
+        const comments = await paginate(`${repoPath()}/issues/${releasePr.number}/comments`);
+        const marker = logic.readyMarker(parsed);
+        const readyCommented = comments.some((c) => c.user?.login === logic.BOT_LOGIN && c.body?.includes(marker));
+        targetReleasePr = { ...releasePr, readyCommented };
+      }
     }
 
     const plan = logic.planMilestone({
       milestone,
       currentVersion,
       release,
-      releasePr: isTarget ? releasePr : null,
+      releasePr: targetReleasePr,
+      ciSatisfied: targetReleasePr ? ciSatisfied.get(targetReleasePr.number) === true : false,
       mergedReleasePr,
       releaseAsPr,
       autoRelease: process.env.AUTO_RELEASE,
+      autoReleaseMerge: process.env.AUTO_RELEASE_MERGE,
     });
     log(`${parsed.key}: ${plan.status} (${plan.reason})`);
 
     for (const action of plan.actions) {
       switch (action.type) {
         case 'enable-auto-merge':
-          await enableAutoMerge(releasePr);
+          await enableAutoMerge(targetReleasePr);
           break;
         case 'disable-auto-merge':
-          await disableAutoMerge(releasePr);
+          await disableAutoMerge(targetReleasePr);
           break;
         case 'enable-release-as-auto-merge':
           await enableAutoMerge(releaseAsPr, {
@@ -264,8 +322,25 @@ async function runRelease() {
             commitBody: `Release-As: ${parsed.version}`,
           });
           break;
+        case 'disable-release-as-auto-merge':
+          await disableAutoMerge(releaseAsPr);
+          break;
         case 'open-release-as-pr':
-          await openReleaseAsPr({ parsed, milestone, releasePr, defaultBranch, mainSha });
+          await openReleaseAsPr({
+            parsed,
+            milestone,
+            releasePr: targetReleasePr,
+            defaultBranch,
+            mainSha,
+            autoMerge: action.autoMerge === true,
+          });
+          break;
+        case 'comment-release-ready':
+          await write(`comment that release PR #${targetReleasePr.number} is ready to merge`, () =>
+            api('POST', `${repoPath()}/issues/${targetReleasePr.number}/comments`, {
+              body: `${logic.readyMarker(parsed)}\nMilestone [${parsed.key}](${milestone.html_url}) is complete and this PR targets ${parsed.version}. It is ready for a maintainer to merge once the required checks pass (safe mode; set \`AUTO_RELEASE_MERGE=true\` for automatic merging).`,
+            }),
+          );
           break;
         case 'annotate-release': {
           const notes = logic.releaseNotesWithMilestone(release.body, parsed, milestone.html_url);
@@ -294,9 +369,9 @@ async function runRelease() {
 }
 
 const mode = process.argv[2];
-const runners = { assign: runAssign, release: runRelease };
+const runners = { gate: runGate, assign: runAssign, release: runRelease };
 if (!TOKEN || !REPOSITORY || !runners[mode]) {
-  console.error('usage: GITHUB_TOKEN=… GITHUB_REPOSITORY=owner/repo node run.mjs assign|release');
+  console.error('usage: GITHUB_TOKEN=… GITHUB_REPOSITORY=owner/repo node run.mjs gate|assign|release');
   process.exit(2);
 }
 runners[mode]().catch((error) => {
