@@ -143,6 +143,49 @@ Format: context → decision → consequences → status.
   `REPO_GUARDIAN_TOKEN` (read-only "Secret scanning alerts" and "Administration") or are reported as "not checked".
   Like the AI workflows, the guardian is advisory: it reports and never merges, reverts or changes settings.
 * **Status:** Accepted (2026-09-14)
+* **Addendum (2026-09-14) — milestones drive releases:**
+  * Roadmap milestones are named `vX.Y — <theme>`; `Backlog — proposed` is never released. When the lowest open
+    `vX.Y` milestone has no open and at least one closed item, `milestone-release.yml` targets `X.Y.0`: the
+    release-please PR must be retargeted with a `Release-As: X.Y.0` commit if it has another version. After the
+    release is published it appends the milestone link to the notes, comments on the release PR and closes the
+    milestone. How much the bot does itself depends on the mode (repository variables; only the exact value `true`
+    counts, anything else is unset):
+  * **Safe mode (default, no variable):** comments only. The workflow posts a one-time "ready to merge" comment on the
+    release PR, or a one-time comment with the commands for a maintainer-made Release-As PR, then annotates release
+    notes and closes the milestone. It opens no pull requests, dispatches no CI for bot PRs and never enables
+    auto-merge; a maintainer approves the pending workflow runs of the release PR (or runs CI on its branch) and merges.
+    Needs no repository setting beyond what release-please already needs.
+  * **Prepare mode (`AUTO_RELEASE_PREPARE=true`):** additionally opens the Release-As bot PR and dispatches CI for bot
+    PRs; a maintainer still merges. Needs "Allow GitHub Actions to create and approve pull requests" (also required by
+    release-please itself).
+  * **Full mode (`AUTO_RELEASE_MERGE=true`, implies prepare):** additionally enables squash auto-merge on the
+    Release-As and release PRs (or merges through the REST API when the PR is already mergeable). Needs "Allow
+    auto-merge" and the required `Typecheck and test` check on `main`, otherwise auto-merge would not wait for CI.
+  * Trade-off, the reason the owner put this on hold: dispatching CI for bot PRs sidesteps the `action_required`
+    approval of their `pull_request` runs, and in full mode the bot creates and merges PRs into `main`, which has no
+    required reviews and does not enforce admins, so release commits would land without any human. Safe mode keeps a
+    human in both places; enable prepare or full mode only deliberately, preferably after adding required reviews or
+    moving the automation to a dedicated GitHub App whose merges are reviewed. The dispatch cannot run code from
+    outsiders: only bot-authored PRs from this repository on `release-please--*` / `release-as/*` branches qualify, and
+    pushing to those branches already requires write access.
+  * Bot PRs get CI without a personal token (prepare and full mode): their `pull_request` runs wait for approval, so
+    the workflow dispatches `ci.yml` (`workflow_dispatch` is exempt from the GITHUB_TOKEN trigger rule) once per head
+    commit, re-reading the branch tip right before dispatching and counting only check runs for that head SHA. In every
+    mode it dispatches the default branch's own release-please workflow when a bot merge left the head unprocessed. A
+    PAT or GitHub App token was rejected as a standing credential with write access.
+  * Safety: decisions live in the pure, unit-tested `.github/scripts/milestone-release/logic.mjs`. Issue and PR events
+    start the write-capable job only when a milestone is involved (or `release:hold` was added) and the actor has
+    write, maintain or admin permission, checked by a read-only job that fails closed (bot or invalid logins, missing
+    records and API errors count as no access). Schedule, manual and milestone events are trusted. Only bot-authored
+    PRs from this repository are ever auto-merged; auto-merge enabled by a human is never withdrawn; a merged or closed
+    Release-As PR is never recreated; the IO shell refuses auto-merge outside full mode and PR creation or CI dispatch
+    in safe mode even if a plan asked for it. Pause everything with `AUTO_RELEASE=false` or the `release:hold` label on
+    the release PR: nothing is dispatched, created, merged, annotated or closed, and milestone assignment stops; only
+    auto-merge this workflow enabled is withdrawn. Variable changes take effect on the next run, so disable an
+    in-flight auto-merge by hand if it must stop immediately. PRs get a milestone only from a `milestone:vX.Y` label
+    or a closing reference to an issue in that milestone.
+  * Latency: bot merges and releases trigger no workflows, so the two-hourly schedule is the fallback; finishing a
+    release (milestone close, notes) can take up to ~2 hours.
 
 ## ADR-020 — Production build: esbuild bundle, container image and compose stack
 * **Context:** ADR-001 bundles the server for production, but no bundle, image or deployment description existed.
