@@ -378,3 +378,53 @@ Format: context → decision → consequences → status.
   project-scoped read or action goes through the per-project access control of ADR-022.
 * **Consequences:** Feature areas can grow without touching the core route file.
 * **Status:** Accepted (2026-09-14)
+
+## ADR-034 — Autopilot sessions, stage 1: bounded away mode with parked approvals (refines ADR-023)
+* **Context:** The owner wants work to continue while nobody is watching (`docs/plans/autopilot.md`). Today every
+  approval parks its run in `WAITING`, which holds a concurrency slot, so two open approvals stall a project with
+  `maxConcurrentTasks = 2`. Approvals also expire after 72 h (ADR-023), so a weekend away turns every gate into a
+  blocked task. Irreversible or risky actions must stay with humans.
+* **Decision (stage 1 only; no council, no idea generation, no decision ladder):**
+  * **Sessions.** Unattended work happens only inside an explicit autopilot session with projects, a time box and a
+    budget, stored in `autopilot_sessions` and `autopilot_session_projects`. A partial unique index allows one active
+    session per project. Only existing `READY`/`BACKLOG` tasks are picked up, never high-risk or security-relevant
+    ones. Starting requires the global `owner` or `admin` role (admins see every project, ADR-022).
+    `AUTOPILOT_ENABLED` is off by default in production and on in development and demo mode. Instance bounds come
+    from `AUTOPILOT_MAX_HOURS`, `AUTOPILOT_MAX_BUDGET_USD`, `AUTOPILOT_MAX_AUTONOMY` (≤ 3),
+    `AUTOPILOT_RETURN_GRACE_HOURS`, `AUTOPILOT_MAX_APPROVAL_DAYS` and `AUTOPILOT_MAX_USD_PER_HOUR`.
+  * **Autonomy is capped, never raised.** Effective autonomy = min(project level, session ceiling, instance maximum,
+    3). It is computed per step from the run's `session_id` and never written to `projects.autonomy_level`, so a crash
+    cannot leave a project changed. Merges and deploys (level 4) are unreachable in a session.
+  * **Gates only tighten.** Every gated action is forced on for session runs, whatever the project settings say. This
+    includes `dependency_addition` (ADR-031) once it is a gated action. A run keeps the capped view and hard gates
+    until it finishes, also after the session ended. A human resume of a paused run detaches it from an ended session.
+  * **Parked approvals.** An approval requested while the session is active is `mode = deferred`. The run goes to the
+    new status `PARKED`, which holds no concurrency slot and does not mark the project `WAITING`. Only a human decides:
+    approve resumes the run, reject blocks it. Nothing is ever auto-approved. `approvals.expires_at` =
+    max(requested + TTL, session end + grace), capped at requested + max(TTL, `AUTOPILOT_MAX_APPROVAL_DAYS`).
+    Expiry uses `expires_at` when set and the ADR-023 TTL otherwise, so blocking approvals behave as before. At most
+    `maxParkedRuns` (default 3) parked runs per project; beyond that no new run starts there.
+  * **Scheduler.** Session projects only get eligible tasks. Skip reasons: quiet hours, ≥ 90 % of the budget,
+    parked cap, risk class, security relevance, and a per-session run cap. `scheduling_hold` is honoured once the
+    planning assistant adds it (named TODO).
+  * **Budget.** A `session` budget scope sums the usage ledger of the session's runs (ledger → agent run → run), so
+    the runtime pauses at 100 %. No `usage_ledger.session_id` column is needed.
+  * **Stop conditions** are evaluated on every worker tick. The session stops at the time box, when the budget is
+    spent, after N consecutive blocked/failed runs, after N consecutive CI failures classified `code`, or when spend in
+    the trailing hour exceeds the hourly cap. Stop thresholds can only be tightened at start. Three or more tool-router
+    `security` denials in the window (counted from the tool audit with the session id) kill the session. After a
+    restart, sessions are resumed from the database, and sessions whose time box passed are stopped.
+  * **Stop and kill switch.** Operators with the operator role on a project of the session, admins and owners may stop
+    (graceful: nothing new starts) or kill. A kill pauses the session's queued, running and waiting runs. Parked runs
+    stay parked. The tool router denies every call carrying the killed session id, and a run step of a killed session
+    pauses instead of executing. Queued step jobs are not cancelled; they no-op on paused runs. Every transition emits
+    one event per project (SSE, ACL-filtered) and an audit entry.
+  * **Digest.** "While you were away" is a pure, deterministic function of runs, approvals, decisions and ledger sums,
+    computed on demand and filtered to the viewer's projects. It contains no model-written text.
+  * **API:** `apps/server/src/routes-autopilot.ts` (ADR-016 pattern) with config, start, list/get, stop, kill (one or
+    all accessible) and digest.
+* **Consequences:** Two parked approvals no longer stall a project, and a long absence no longer expires parked work.
+  The owner gives up "deploy while away", and level-2 projects do not publish in a session. Not built yet (later plan
+  stages): graceful `stopping` state, session extension, per-project failure streaks, spend-rate baselines, decision
+  requests, councils v2, ideas, stored digests, notifications, leases.
+* **Status:** Accepted (2026-09-15)
