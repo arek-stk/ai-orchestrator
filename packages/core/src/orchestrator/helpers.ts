@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AgentRole, ProjectStatus, RunStage, TaskKind } from '../domain/enums';
+import { dashSlug } from '../domain/project';
 import type { FileChange } from '../domain/run';
 import type { Task } from '../domain/task';
 import type { StagePlanItem } from '../pipeline/stage-planner';
@@ -9,12 +10,8 @@ export function truncate(text: string, max: number): string {
 }
 
 export function branchNameFor(task: Pick<Task, 'id' | 'title'>): string {
-  const slug = task.title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-    .replace(/-+$/g, '');
+  // Task titles are untrusted (issue text, model output): dashSlug is linear, unlike the regex chain it replaced.
+  const slug = dashSlug(task.title, 40);
   return `orchestrator/${task.id}${slug ? `-${slug}` : ''}`;
 }
 

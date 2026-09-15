@@ -243,14 +243,38 @@ export const ProjectInputSchema = z.object({
 });
 export type ProjectInput = z.infer<typeof ProjectInputSchema>;
 
+function isSlugChar(code: number): boolean {
+  return (code >= 97 && code <= 122) || (code >= 48 && code <= 57);
+}
+
+/**
+ * Lower-cases `text` and joins its runs of `[a-z0-9]` with single dashes, without leading or trailing dashes. With
+ * `maxLength`, the slug is cut to that length and a dash left at the cut is dropped.
+ *
+ * Same result as `.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')` (then `.slice(0, max)
+ * .replace(/-+$/g, '')`), computed in one linear pass: titles and names are untrusted input and the `-+$` alternative
+ * backtracks polynomially on long dash runs (CodeQL js/polynomial-redos).
+ */
+export function dashSlug(text: string, maxLength?: number): string {
+  const lower = text.toLowerCase();
+  const runs: string[] = [];
+  let start = -1;
+  for (let i = 0; i <= lower.length; i++) {
+    const inRun = i < lower.length && isSlugChar(lower.charCodeAt(i));
+    if (inRun && start < 0) start = i;
+    else if (!inRun && start >= 0) {
+      runs.push(lower.slice(start, i));
+      start = -1;
+    }
+  }
+  const slug = runs.join('-');
+  if (maxLength === undefined) return slug;
+  // Runs are joined by single dashes, so a cut leaves at most one trailing dash.
+  const cut = slug.slice(0, maxLength);
+  return cut.endsWith('-') ? cut.slice(0, -1) : cut;
+}
+
 export function slugify(name: string): string {
-  const slug = name
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64)
-    .replace(/-+$/g, '');
+  const slug = dashSlug(name.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''), 64);
   return slug.length > 0 ? slug : 'project';
 }

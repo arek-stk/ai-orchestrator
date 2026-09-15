@@ -1,4 +1,4 @@
-import type { StructuredRequest } from '@orch/core';
+import { dashSlug, type StructuredRequest } from '@orch/core';
 import type { MockResponder } from '../providers/mock';
 
 // Realistic canned outputs for demo mode (no API keys). Every responder returns data that satisfies
@@ -20,14 +20,9 @@ function criteria(text: string): string[] {
     .filter(Boolean);
 }
 
-function slugOf(title: string): string {
-  return (
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'change'
-  );
+/** Linear-time slug (the title comes from task text); keeps a dash left at the 40-character cut, as before. */
+export function slugOf(title: string): string {
+  return dashSlug(title).slice(0, 40) || 'change';
 }
 
 function camelOf(slug: string): string {
