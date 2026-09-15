@@ -5,8 +5,26 @@ without user input. Questions and decisions go to the app first (decision memory
 research), then work continues. The AIs come up with ideas for what to build next, but discuss them with the other
 agents before acting.
 
-Status: **proposal**. Nothing here is implemented. Roadmap position 3 in `docs/STATE.md` ("Roadmap (approved order)").
-Proposed decision: **ADR-0XX (number assigned at merge)**, draft in §13. `docs/DECISIONS.md` is not edited by this plan.
+Status: **stage 1 implemented** (away mode MVP, §9.6), decided in **ADR-034** in `docs/DECISIONS.md`. Stages 2–5
+(decision ladder, council v2, ideas, hardening) remain proposals. Roadmap position 3 in `docs/STATE.md`.
+Proposed decision for the later stages: draft in §13 (the stage 1 parts are superseded by ADR-034).
+
+### Stage 1 progress (2026-09-15)
+
+| Acceptance criterion (§9.6, stage 1) | State |
+|---|---|
+| (a) parked runs free their slot; a third READY task starts with `maxConcurrentTasks = 2`; outside sessions unchanged | ✅ core pipeline test |
+| (b) autonomy computed at runtime, never persisted, also across a restart | ✅ changed by ADR-034: capped at min(project, ceiling, 3), never raised, so a level-2 project stays at 2 |
+| (c) level-4 project never deploys; `deploy.run` denied | ✅ |
+| (d) kill: runs `PAUSED`, next tool call with the session id denied, event + audit | ✅ (queued step jobs are not cancelled; they no-op on paused runs) |
+| (e) operator can kill, 403 on start; ACL cross-project denial | ✅ API tests |
+| (f) budget: 90 % no new run, 100 % runtime pauses with scope `session` | ✅ |
+| (g) failure streak and security-denial kill | ✅ session-wide streak (per-project streaks deferred) |
+| (h) deferred approval outlives 72 h, blocking one still expires | ✅ plus a hard cap (`AUTOPILOT_MAX_APPROVAL_DAYS`) |
+| (i) digest numbers equal ledger sums | ✅ |
+| (j) quiet hours across a DST change | ✅ |
+| (k) a disabled gate still parks in a session | ✅ (all gated actions are hard in a session) |
+| Not in stage 1 as built | `stopping` state, PATCH extend, class A/B risk classifier, spend-rate baseline, `scheduling_hold` (named TODO until the planning assistant adds it), metrics |
 Other in-flight drafts already claim ADR-031 (Plugin Scout), ADR-032 (reserved for provider accounts) and ADR-033
 (planning assistant, `docs/plans/planning-assistant.md`).
 

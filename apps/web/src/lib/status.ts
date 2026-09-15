@@ -15,6 +15,7 @@ export function runStatusTone(status: RunStatus): Tone {
       return 'accent';
     case 'WAITING':
     case 'PAUSED':
+    case 'PARKED':
       return 'warning';
     case 'BLOCKED':
       return 'serious';
@@ -23,6 +24,10 @@ export function runStatusTone(status: RunStatus): Tone {
     default:
       return 'muted';
   }
+}
+
+export function autopilotStatusTone(status: 'active' | 'ended' | 'killed'): Tone {
+  return status === 'active' ? 'accent' : status === 'killed' ? 'critical' : 'muted';
 }
 
 export function taskStatusTone(status: TaskStatus): Tone {

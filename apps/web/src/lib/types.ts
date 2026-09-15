@@ -19,7 +19,8 @@ export type Stage = (typeof STAGES)[number];
 export type RunStage = Stage | 'DEBUG';
 export type StageStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'waiting';
 
-export const RUN_STATUSES = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED', 'BLOCKED', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const;
+/** PARKED: waiting for a human decision on an approval deferred by the autopilot; holds no concurrency slot. */
+export const RUN_STATUSES = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED', 'PARKED', 'BLOCKED', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export const AGENT_ROLES = [
@@ -263,6 +264,8 @@ export interface RunCheckpoint {
   pendingApprovalId: string | null;
   approvedActions: string[];
   notes: string[];
+  /** Time spent parked waiting for a human (autopilot); excluded from the runtime limit. */
+  parkedMs?: number;
   outcome: string | null;
 }
 
@@ -393,6 +396,11 @@ export interface Approval {
   decidedBy: string | null;
   decidedAt: ISODate | null;
   comment: string | null;
+  /** blocking: the run waits; deferred: parked by the autopilot, the run frees its slot. */
+  mode: 'blocking' | 'deferred';
+  sessionId: string | null;
+  /** Explicit expiry of deferred approvals (session end plus grace, capped). */
+  expiresAt: ISODate | null;
   /** Typed findings of a `dependency_addition` approval (ADR-031); null or absent for other actions. */
   dependencies?: DependencyApprovalDetails | null;
 }
@@ -422,6 +430,82 @@ export interface DependencyApprovalDetails {
 }
 
 // ---------------------------------------------------------------------------
+// Autopilot (away mode, ADR-034)
+// ---------------------------------------------------------------------------
+
+export type AutopilotSessionStatus = 'active' | 'ended' | 'killed';
+
+export interface QuietHours {
+  timeZone: string;
+  windows: Array<{ from: string; to: string }>;
+}
+
+export interface AutopilotSessionView {
+  id: string;
+  startedBy: string;
+  status: AutopilotSessionStatus;
+  projectIds: string[];
+  startsAt: ISODate;
+  endsAt: ISODate;
+  budgetUsd: number;
+  autonomyCeiling: number;
+  maxTaskRisk: 'low' | 'medium';
+  maxConcurrentRuns: number | null;
+  maxParkedRuns: number;
+  quietHours: QuietHours | null;
+  demo: boolean;
+  stopReason: string | null;
+  stopDetail: string | null;
+  stoppedBy: string | null;
+  endedAt: ISODate | null;
+  createdAt: ISODate;
+  progress: {
+    /** null when some of the session's projects are hidden from the viewer. */
+    spentUsd: number | null;
+    runsStarted: number;
+    activeRuns: number;
+    parkedRuns: number;
+    pendingApprovals: number;
+  };
+}
+
+export interface AutopilotConfig {
+  enabled: boolean;
+  maxHours: number;
+  maxBudgetUsd: number;
+  maxAutonomy: number;
+  returnGraceHours: number;
+  approvalTtlHours: number;
+  gatedActions: string[];
+  parkedForHumans: string[];
+}
+
+export interface DigestRunCounts {
+  runsStarted: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  inProgress: number;
+  parked: number;
+}
+
+export interface AutopilotDigest {
+  sessionId: string;
+  asOf: ISODate;
+  status: AutopilotSessionStatus;
+  demo: boolean;
+  window: { startsAt: ISODate; endsAt: ISODate; endedAt: ISODate | null };
+  stop: { reason: string | null; detail: string | null; by: string | null };
+  totals: DigestRunCounts & { pullRequests: number; decisions: number };
+  projects: Array<DigestRunCounts & { projectId: string }>;
+  pullRequests: Array<{ runId: string; taskId: string; projectId: string; taskTitle: string; number: number; url: string | null; outcome: string | null }>;
+  parkedApprovals: Array<{ approvalId: string; projectId: string; runId: string | null; taskId: string | null; taskTitle: string | null; action: string; reason: string; status: ApprovalStatus; expiresAt: ISODate | null; decidedBy: string | null }>;
+  failures: Array<{ runId: string; taskId: string; projectId: string; taskTitle: string; status: RunStatus; reason: string }>;
+  decisions: Array<{ decisionId: string; projectId: string; taskId: string | null; question: string; decision: string; confidence: number; createdAt: ISODate }>;
+  costs: { totalUsd: number; budgetUsd: number; budgetUsedPct: number; byProject: Array<{ projectId: string; costUsd: number }> };
+}
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
@@ -440,6 +524,8 @@ export const EVENT_TYPES = [
   'budget.exhausted',
   'scheduler.tick',
   'room.message',
+  'autopilot.session.started', 'autopilot.session.resumed', 'autopilot.session.stopped', 'autopilot.session.killed',
+  'autopilot.run.started', 'autopilot.run.parked', 'autopilot.run.unparked',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

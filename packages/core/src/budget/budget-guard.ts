@@ -1,4 +1,4 @@
-export type BudgetScopeKind = 'global' | 'project' | 'task' | 'agent';
+export type BudgetScopeKind = 'global' | 'project' | 'task' | 'agent' | 'session';
 
 export interface BudgetScope {
   scope: BudgetScopeKind;

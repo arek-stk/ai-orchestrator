@@ -30,7 +30,7 @@ export interface EventPayloads {
   'ci.failed': { sha: string; classification: string };
   'deployment.started': { workflow: string };
   'deployment.completed': { workflow: string; conclusion: string };
-  'approval.required': { approvalId: string; action: GatedAction | 'publish_changes'; risk: string; reason: string };
+  'approval.required': { approvalId: string; action: GatedAction | 'publish_changes'; risk: string; reason: string; mode?: 'blocking' | 'deferred' };
   'approval.decided': { approvalId: string; status: 'approved' | 'rejected' | 'expired'; by: string };
   'budget.exhausted': { scope: string; reason: string };
   'scheduler.tick': { selected: number; skipped: number };
@@ -44,6 +44,14 @@ export interface EventPayloads {
   'research.completed': { memoryKey: string; question: string; confidence: number };
   /** Content-free: clients load the message through the room API (ADR-030). */
   'room.message': { conversationId: string; messageId: string; seq: number; threadId: string | null; authorType: MessageAuthorType; authorName: string; intent: MessageIntent };
+  // Autopilot (away mode). Session events are emitted once per project in scope so per-project ACLs apply.
+  'autopilot.session.started': { sessionId: string; endsAt: string; budgetUsd: number; effectiveAutonomy: number; demo: boolean };
+  'autopilot.session.resumed': { sessionId: string; reason: string };
+  'autopilot.session.stopped': { sessionId: string; reason: string; detail: string; by: string };
+  'autopilot.session.killed': { sessionId: string; reason: string; detail: string; by: string; pausedRuns: number };
+  'autopilot.run.started': { sessionId: string; effectiveAutonomy: number; baseAutonomy: number };
+  'autopilot.run.parked': { sessionId: string; approvalId: string; action: string; reason: string; expiresAt: string | null };
+  'autopilot.run.unparked': { sessionId: string | null; approvalId: string; status: 'approved' | 'rejected' | 'expired' };
 }
 
 export type EventType = keyof EventPayloads;

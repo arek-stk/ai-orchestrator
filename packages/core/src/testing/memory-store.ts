@@ -1,8 +1,12 @@
 import type { AgentCacheEntry, AgentCacheStore } from '../agents/cache';
+import type { AutopilotDigestInput } from '../autopilot/digest';
+import { AutopilotConflictError, type AutopilotSessionRepository } from '../autopilot/service';
+import type { AutopilotSession } from '../autopilot/session';
+import type { ToolAuditEntry } from '../tools/tool-router';
 import type { IndexedFile } from '../context/context-builder';
 import type { FileSummaryStore } from '../context/file-summarizer';
 import type { HealthScan, HealthScanRepository, ImprovementProposal, ProposalRepository } from '../intelligence/types';
-import type { RunStatus, TaskStatus } from '../domain/enums';
+import { TERMINAL_RUN_STATUSES, type RunStatus, type TaskStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
 import type { AgentRun, Approval, Decision, MemoryItem, UsageEntry } from '../domain/records';
 import { emptyCheckpoint, type PipelineRun } from '../domain/run';
@@ -149,6 +153,7 @@ export function createMemoryStore(clock: Clock = systemClock) {
         currentStage: null,
         stagePlan: clone(input.stagePlan),
         stageStates: {},
+        sessionId: input.sessionId ?? null,
         iterations: 0,
         debugAttempts: 0,
         costUsd: 0,
@@ -172,6 +177,7 @@ export function createMemoryStore(clock: Clock = systemClock) {
         [...runMap.values()]
           .filter((r) => !filter.projectId || r.projectId === filter.projectId)
           .filter((r) => !filter.taskId || r.taskId === filter.taskId)
+          .filter((r) => !filter.sessionId || r.sessionId === filter.sessionId)
           .filter((r) => !filter.statuses || filter.statuses.includes(r.status))
           .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
           .slice(0, filter.limit ?? 100),
@@ -296,6 +302,9 @@ export function createMemoryStore(clock: Clock = systemClock) {
         decidedBy: null,
         decidedAt: null,
         comment: null,
+        mode: input.mode ?? 'blocking',
+        sessionId: input.sessionId ?? null,
+        expiresAt: input.expiresAt ?? null,
       };
       approvalList.push(approval);
       return clone(approval);
@@ -305,6 +314,7 @@ export function createMemoryStore(clock: Clock = systemClock) {
       clone(
         approvalList
           .filter((a) => (!filter.projectId || a.projectId === filter.projectId) && (!filter.status || a.status === filter.status))
+          .filter((a) => !filter.sessionId || a.sessionId === filter.sessionId)
           .slice(0, filter.limit ?? 100),
       ),
     decide: async (approvalId, status, decidedBy, comment) => {
@@ -455,7 +465,92 @@ export function createMemoryStore(clock: Clock = systemClock) {
     },
   };
 
-  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger, agentCache, scans, proposals, fileSummaries };
+  // Tool audit trail (security denials count towards autopilot stop conditions).
+  const toolAuditLog: Array<ToolAuditEntry & { at: Date }> = [];
+  const toolAudit = (entry: ToolAuditEntry) => void toolAuditLog.push({ ...clone(entry), at: now() });
+
+  const sessionList: AutopilotSession[] = [];
+  const activeSessionByProject = new Map<string, string>();
+  const sessionRuns = (sessionId: string) => [...runMap.values()].filter((r) => r.sessionId === sessionId);
+  /** Ledger rows of the session's runs written while the session was active. */
+  const sessionLedger = (session: AutopilotSession, at: Date, since = session.startsAt) => {
+    const runIds = new Set(sessionRuns(session.id).map((r) => r.id));
+    const agentRunIds = new Set(agentRunList.filter((a) => a.runId !== null && runIds.has(a.runId)).map((a) => a.id));
+    const end = (session.endedAt ?? at).getTime();
+    return ledger.filter((e) => e.agentRunId !== null && agentRunIds.has(e.agentRunId) && e.createdAt.getTime() >= since.getTime() && e.createdAt.getTime() <= end);
+  };
+  const autopilotSessions: AutopilotSessionRepository = {
+    create: async (input) => {
+      const conflicts = input.projectIds.filter((projectId) => activeSessionByProject.has(projectId));
+      if (conflicts.length > 0) throw new AutopilotConflictError(conflicts);
+      const session: AutopilotSession = { ...clone(input), id: id('aps'), status: 'active', stopReason: null, stopDetail: null, stoppedBy: null, endedAt: null, createdAt: now(), updatedAt: now() };
+      sessionList.push(session);
+      for (const projectId of session.projectIds) activeSessionByProject.set(projectId, session.id);
+      return clone(session);
+    },
+    get: async (sessionId) => clone(sessionList.find((s) => s.id === sessionId) ?? null),
+    list: async (filter) =>
+      clone(
+        [...sessionList]
+          .reverse()
+          .filter((s) => !filter.statuses || filter.statuses.includes(s.status))
+          .filter((s) => !filter.projectIds || s.projectIds.some((p) => filter.projectIds!.includes(p)))
+          .slice(0, filter.limit ?? 100),
+      ),
+    finish: async (sessionId, patch) => {
+      const session = sessionList.find((s) => s.id === sessionId);
+      if (!session || session.status !== 'active') return null;
+      Object.assign(session, clone(patch), { updatedAt: now() });
+      for (const projectId of session.projectIds) if (activeSessionByProject.get(projectId) === sessionId) activeSessionByProject.delete(projectId);
+      return clone(session);
+    },
+    spentUsd: async (session, at) => sessionLedger(session, at).reduce((sum, e) => sum + e.costUsd, 0),
+    stats: async (session, at) => {
+      const runIds = new Set(sessionRuns(session.id).map((r) => r.id));
+      const hourAgo = new Date(Math.max(session.startsAt.getTime(), at.getTime() - 60 * 60 * 1000));
+      const windowStart = at.getTime() - session.stopPolicy.securityDenialWindowMs;
+      return {
+        spentUsd: sessionLedger(session, at).reduce((sum, e) => sum + e.costUsd, 0),
+        spentLastHourUsd: sessionLedger(session, at, hourAgo).reduce((sum, e) => sum + e.costUsd, 0),
+        finishedRuns: sessionRuns(session.id)
+          .filter((r) => TERMINAL_RUN_STATUSES.has(r.status) && r.finishedAt !== null)
+          .sort((a, b) => a.finishedAt!.getTime() - b.finishedAt!.getTime())
+          .map((r) => ({ runId: r.id, status: r.status, finishedAt: r.finishedAt! })),
+        ciResults: eventLog
+          .filter((e) => (e.type === 'ci.passed' || e.type === 'ci.failed') && e.runId !== null && runIds.has(e.runId))
+          .map((e) => ({ passed: e.type === 'ci.passed', classification: e.type === 'ci.failed' ? e.payload.classification : null })),
+        securityDenials: toolAuditLog.filter((a) => a.sessionId === session.id && a.outcome === 'denied' && (a.reason ?? '').startsWith('security') && a.at.getTime() >= windowStart).length,
+      };
+    },
+    digestInput: async (session, at): Promise<AutopilotDigestInput> => {
+      const runs = sessionRuns(session.id);
+      const runIds = new Set(runs.map((r) => r.id));
+      const costByProject = new Map<string, number>();
+      for (const entry of sessionLedger(session, at)) if (entry.projectId) costByProject.set(entry.projectId, (costByProject.get(entry.projectId) ?? 0) + entry.costUsd);
+      return {
+        session: clone(session),
+        runs: runs.map((r) => ({
+          id: r.id,
+          taskId: r.taskId,
+          projectId: r.projectId,
+          status: r.status,
+          costUsd: r.costUsd,
+          blockedReason: r.blockedReason,
+          prNumber: r.checkpoint.prNumber,
+          prUrl: r.checkpoint.prUrl,
+          outcome: r.checkpoint.outcome,
+          startedAt: r.startedAt,
+          finishedAt: r.finishedAt,
+        })),
+        taskTitles: new Map(runs.map((r) => [r.taskId, taskMap.get(r.taskId)?.title ?? r.taskId])),
+        approvals: clone(approvalList.filter((a) => a.sessionId === session.id)),
+        decisions: clone(decisionList.filter((d) => d.runId !== null && runIds.has(d.runId))),
+        costByProject: [...costByProject.entries()].map(([projectId, costUsd]) => ({ projectId, costUsd })),
+      };
+    },
+  };
+
+  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger, agentCache, scans, proposals, fileSummaries, toolAudit, toolAuditLog, autopilotSessions };
 }
 
 export type MemoryStore = ReturnType<typeof createMemoryStore>;

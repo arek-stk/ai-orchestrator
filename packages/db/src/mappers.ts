@@ -94,6 +94,7 @@ export function toRun(row: RunRow): PipelineRun {
     currentStage: row.currentStage,
     stagePlan: row.stagePlan,
     stageStates: row.stageStates,
+    sessionId: row.sessionId,
     iterations: row.iterations,
     debugAttempts: row.debugAttempts,
     costUsd: row.costUsd,

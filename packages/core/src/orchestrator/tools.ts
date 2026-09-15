@@ -23,6 +23,7 @@ export interface OrchestratorToolDeps {
   sandbox: SandboxPort;
   sandboxTimeoutMs: number;
   audit?: (entry: ToolAuditEntry) => void | Promise<void>;
+  sessionGuard?: (sessionId: string) => Promise<string | null>;
 }
 
 function repoOf(ctx: ToolContext, tool: ToolName): RepoCoordinates {
@@ -50,7 +51,7 @@ export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter 
     return { action: 'dependency_addition', grant: dependencyApprovalGrant(detection.fingerprint), detail: describeDependencyFindings(detection.findings) };
   };
 
-  return new ToolRouter({ audit: deps.audit })
+  return new ToolRouter({ audit: deps.audit, ...(deps.sessionGuard ? { sessionGuard: deps.sessionGuard } : {}) })
     .register({
       name: 'repository.write',
       description: 'Stage a file change in the run workspace',

@@ -68,6 +68,8 @@ export interface RunCheckpoint {
   pendingApprovalId: string | null;
   approvedActions: string[];
   notes: string[];
+  /** Total time the run spent PARKED waiting for a human (autopilot); excluded from the runtime stop condition. */
+  parkedMs?: number;
   /** Final result label, e.g. pr_ready, changes_ready, plan_ready, decomposed, deployed. */
   outcome: string | null;
 }
@@ -109,6 +111,8 @@ export interface PipelineRun {
   currentStage: RunStage | null;
   stagePlan: StagePlanItem[];
   stageStates: Partial<Record<RunStage, StageState>>;
+  /** Autopilot session that started this run (null: started by a human or outside a session). */
+  sessionId: string | null;
   /** Loop-backs (debug, review feedback, stage retries). Normal stage progression does not count. */
   iterations: number;
   debugAttempts: number;

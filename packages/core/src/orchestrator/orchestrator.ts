@@ -1,8 +1,17 @@
 import { AGENT_DEFINITIONS } from '../agents/definitions';
 import type { AgentRuntime } from '../agents/runtime';
 import { approvalGrant } from '../approval/dependencies';
+import type { AutopilotAuditEntry, AutopilotSessionRepository } from '../autopilot/service';
+import { applyAutopilotSession, DEFAULT_AUTOPILOT_LIMITS, sessionTaskEligibility, type AutopilotLimits, type AutopilotSession } from '../autopilot/session';
 import type { FileSummaryStore } from '../context/file-summarizer';
-import { TERMINAL_RUN_STATUSES, type RunStage, type RunStatus, type StageStatus } from '../domain/enums';
+import {
+  NON_TERMINAL_RUN_STATUSES,
+  SLOT_HOLDING_RUN_STATUSES,
+  TERMINAL_RUN_STATUSES,
+  type RunStage,
+  type RunStatus,
+  type StageStatus,
+} from '../domain/enums';
 import type { Project } from '../domain/project';
 import type { PipelineRun } from '../domain/run';
 import type { Task } from '../domain/task';
@@ -23,7 +32,7 @@ import {
 } from '../ports';
 import type { RepoFileStore, RepoIndexer } from '../repo-index/indexer';
 import type { SandboxPort } from '../sandbox/port';
-import { schedule } from '../scheduler/scheduler';
+import { schedule, type SkippedTask } from '../scheduler/scheduler';
 import type { ToolAuditEntry, ToolRouter } from '../tools/tool-router';
 import { commitStage, ciStage, deployStage, monitorStage, prStage, pushStage } from './delivery';
 import { defaultOutcome, nextPlannedStage, STAGE_PROJECT_STATUS, truncate } from './helpers';
@@ -35,6 +44,7 @@ import {
   intakeStage,
   planStage,
   recordFailure,
+  requestRunApproval,
   reviewStage,
   securityStage,
   testStage,
@@ -56,6 +66,10 @@ export interface OrchestratorOptions {
   /** RUNNING runs untouched for this long get a new step job (lost job after a crash). */
   stalledRunMs: number;
   globalCapacity: number;
+  /** APPROVAL_TTL_HOURS (ADR-023); used to compute the expiry of deferred approvals. ≤ 0 disables expiry. */
+  approvalTtlMs: number;
+  /** Autopilot bounds used by the pipeline (autonomy cap, deferred approval expiry). */
+  autopilot: Pick<AutopilotLimits, 'maxAutonomy' | 'returnGraceMs' | 'maxApprovalLifetimeMs'>;
 }
 
 export const DEFAULT_ORCHESTRATOR_OPTIONS: Readonly<OrchestratorOptions> = Object.freeze({
@@ -69,6 +83,12 @@ export const DEFAULT_ORCHESTRATOR_OPTIONS: Readonly<OrchestratorOptions> = Objec
   sandboxTimeoutMs: 15 * 60_000,
   stalledRunMs: 10 * 60_000,
   globalCapacity: 4,
+  approvalTtlMs: 72 * 60 * 60 * 1000,
+  autopilot: {
+    maxAutonomy: DEFAULT_AUTOPILOT_LIMITS.maxAutonomy,
+    returnGraceMs: DEFAULT_AUTOPILOT_LIMITS.returnGraceMs,
+    maxApprovalLifetimeMs: DEFAULT_AUTOPILOT_LIMITS.maxApprovalLifetimeMs,
+  },
 });
 
 export interface OrchestratorDeps {
@@ -90,6 +110,10 @@ export interface OrchestratorDeps {
   fileSummaries?: FileSummaryStore;
   toolAudit?: (entry: ToolAuditEntry) => void | Promise<void>;
   globalBudgetExhausted?: () => Promise<boolean>;
+  /** Autopilot sessions (away mode). Absent: the pipeline behaves as without sessions. */
+  autopilotSessions?: AutopilotSessionRepository;
+  /** Audit trail for autopilot run transitions (started in a session, parked, unparked, paused by a kill). */
+  audit?: (entry: AutopilotAuditEntry) => Promise<void>;
   options?: Partial<OrchestratorOptions>;
 }
 
@@ -98,7 +122,8 @@ export type StepResult = { next: 'continue' } | { next: 'wait'; resumeAt: Date |
 export const PIPELINE_STEP_JOB = 'pipeline.step';
 export const SCHEDULER_TICK_JOB = 'scheduler.tick';
 
-const ACTIVE_STATUSES: readonly RunStatus[] = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED'];
+/** Runs a kill switch pauses; parked runs already wait for a human and paused ones are stopped. */
+const PAUSABLE: readonly RunStatus[] = ['QUEUED', 'RUNNING', 'WAITING'];
 
 const HANDLERS: Readonly<Record<RunStage, StageHandler>> = {
   INTAKE: intakeStage,
@@ -130,11 +155,13 @@ export class Orchestrator {
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.options = { ...DEFAULT_ORCHESTRATOR_OPTIONS, ...deps.options };
+    const sessions = deps.autopilotSessions;
     this.tools = createOrchestratorTools({
       github: deps.github,
       sandbox: deps.sandbox,
       sandboxTimeoutMs: this.options.sandboxTimeoutMs,
       audit: deps.toolAudit,
+      ...(sessions ? { sessionGuard: async (id: string) => ((await sessions.get(id))?.status === 'killed' ? `autopilot session ${id} was killed` : null) } : {}),
     });
   }
 
@@ -143,16 +170,37 @@ export class Orchestrator {
   // -------------------------------------------------------------------------
 
   /** Picks tasks with the scheduler and starts runs for them; also re-enqueues stalled runs. */
-  async tick(): Promise<{ started: string[]; recovered: number }> {
+  async tick(): Promise<{ started: string[]; recovered: number; skipped: SkippedTask[] }> {
     const now = this.deps.clock.now();
-    const [projects, candidates] = await Promise.all([
+    const [projects, candidates, sessions] = await Promise.all([
       this.deps.projects.list(),
       this.deps.tasks.list({ statuses: ['READY', 'BACKLOG'], limit: 1000 }),
+      this.deps.autopilotSessions ? this.deps.autopilotSessions.list({ statuses: ['active'], limit: 200 }) : Promise.resolve([]),
     ]);
-    const dependencyIds = [...new Set(candidates.flatMap((t) => t.dependencies))];
-    const [statuses, active, running] = await Promise.all([
+
+    // Projects in an active session only get tasks the autopilot may pick up.
+    const sessionByProject = new Map<string, AutopilotSession>();
+    for (const session of sessions) for (const projectId of session.projectIds) sessionByProject.set(projectId, session);
+    const parked = sessions.length > 0 ? await this.deps.runs.countByProject(['PARKED']) : new Map<string, number>();
+    const spent = new Map<string, number>();
+    const sessionSkips: SkippedTask[] = [];
+    const eligible: Task[] = [];
+    for (const task of candidates) {
+      const session = sessionByProject.get(task.projectId);
+      if (!session) {
+        eligible.push(task);
+        continue;
+      }
+      if (!spent.has(session.id)) spent.set(session.id, await this.deps.autopilotSessions!.spentUsd(session, now));
+      const reason = sessionTaskEligibility({ task, session, now, spentUsd: spent.get(session.id)!, parkedRuns: parked.get(task.projectId) ?? 0 });
+      if (reason) sessionSkips.push({ taskId: task.id, projectId: task.projectId, reason });
+      else eligible.push(task);
+    }
+
+    const dependencyIds = [...new Set(eligible.flatMap((t) => t.dependencies))];
+    const [statuses, slotHolding, running] = await Promise.all([
       this.deps.tasks.statuses(dependencyIds),
-      this.deps.runs.countByProject(ACTIVE_STATUSES),
+      this.deps.runs.countByProject(SLOT_HOLDING_RUN_STATUSES),
       this.deps.runs.countByProject(['QUEUED', 'RUNNING']),
     ]);
 
@@ -167,18 +215,34 @@ export class Orchestrator {
         spentUsd: p.spentUsd,
         lastScheduledAt: p.lastScheduledAt,
       })),
-      tasks: candidates,
+      tasks: eligible,
       taskStatuses: statuses,
-      runningTasksByProject: active,
+      // PARKED runs wait for a human and hold no slot, so parked approvals never stall a project.
+      runningTasksByProject: slotHolding,
       globalCapacity: this.options.globalCapacity,
       globalRunning: [...running.values()].reduce((a, b) => a + b, 0),
       globalBudgetExhausted: (await this.deps.globalBudgetExhausted?.()) ?? false,
     });
 
+    const skipped = [...sessionSkips, ...result.skipped];
+    const sessionSlots = new Map<string, number>();
     const started: string[] = [];
     for (const selected of result.selected) {
-      const run = await this.startTask(selected.taskId);
-      if (run) started.push(run.id);
+      const session = sessionByProject.get(selected.projectId);
+      if (session?.maxConcurrentRuns) {
+        if (!sessionSlots.has(session.id)) {
+          sessionSlots.set(session.id, (await this.deps.runs.list({ sessionId: session.id, statuses: SLOT_HOLDING_RUN_STATUSES, limit: 100 })).length);
+        }
+        if (sessionSlots.get(session.id)! >= session.maxConcurrentRuns) {
+          skipped.push({ taskId: selected.taskId, projectId: selected.projectId, reason: 'autopilot_concurrency_limit' });
+          continue;
+        }
+      }
+      const run = await this.startTask(selected.taskId, session ? { sessionId: session.id } : {});
+      if (run) {
+        started.push(run.id);
+        if (session) sessionSlots.set(session.id, (sessionSlots.get(session.id) ?? 0) + 1);
+      }
     }
     if (started.length > 0) {
       await this.deps.events.emit({
@@ -186,19 +250,29 @@ export class Orchestrator {
         projectId: null,
         taskId: null,
         runId: null,
-        payload: { selected: started.length, skipped: result.skipped.length },
+        payload: { selected: started.length, skipped: skipped.length },
       });
     }
-    return { started, recovered: await this.recoverStalledRuns(now) };
+    return { started, recovered: await this.recoverStalledRuns(now), skipped };
   }
 
-  async startTask(taskId: string): Promise<PipelineRun | null> {
+  /** Starts a run. With `sessionId` the run belongs to that active autopilot session (capped autonomy, hard gates). */
+  async startTask(taskId: string, options: { sessionId?: string } = {}): Promise<PipelineRun | null> {
     const task = await this.deps.tasks.get(taskId);
     if (!task || (task.status !== 'READY' && task.status !== 'BACKLOG')) return null;
-    const project = await this.deps.projects.get(task.projectId);
-    if (!project) return null;
-    const existing = await this.deps.runs.list({ taskId, statuses: ACTIVE_STATUSES, limit: 1 });
+    const baseProject = await this.deps.projects.get(task.projectId);
+    if (!baseProject) return null;
+    const existing = await this.deps.runs.list({ taskId, statuses: NON_TERMINAL_RUN_STATUSES, limit: 1 });
     if (existing.length > 0) return null;
+
+    let session: AutopilotSession | null = null;
+    if (options.sessionId) {
+      const found = (await this.deps.autopilotSessions?.get(options.sessionId)) ?? null;
+      // The session ended between the scheduler decision and the start: the next tick decides again.
+      if (!found || found.status !== 'active' || !found.projectIds.includes(baseProject.id)) return null;
+      session = found;
+    }
+    const project = session ? applyAutopilotSession(baseProject, session, this.options.autopilot) : baseProject;
 
     const now = this.deps.clock.now();
     const plan = planStages(task, project);
@@ -207,6 +281,7 @@ export class Orchestrator {
       projectId: project.id,
       stagePlan: plan,
       limits: { ...project.settings.stopConditions, maxCostUsd: Math.min(project.settings.stopConditions.maxCostUsd, task.maxCost) },
+      sessionId: session?.id ?? null,
     });
     for (const item of plan) {
       if (!item.run) run.stageStates[item.stage] = { status: 'skipped', startedAt: null, finishedAt: null, summary: item.reason, attempts: 0 };
@@ -218,6 +293,11 @@ export class Orchestrator {
     await this.deps.tasks.update(task.id, { status: 'RUNNING', attempts: task.attempts + 1, blockedReason: null });
     await this.deps.projects.update(project.id, { lastScheduledAt: now });
     await this.deps.events.emit({ type: 'task.started', projectId: project.id, taskId: task.id, runId: run.id, payload: { runId: run.id } });
+    if (session) {
+      const payload = { sessionId: session.id, effectiveAutonomy: project.autonomyLevel, baseAutonomy: baseProject.autonomyLevel };
+      await this.deps.events.emit({ type: 'autopilot.run.started', projectId: project.id, taskId: task.id, runId: run.id, payload });
+      await this.audit('autopilot.run.start', run.id, { ...payload, projectId: project.id, taskId: task.id });
+    }
     await this.enqueueStep(run);
     return run;
   }
@@ -247,21 +327,40 @@ export class Orchestrator {
     if (TERMINAL_RUN_STATUSES.has(run.status)) return { next: 'done', status: run.status };
 
     const now = this.deps.clock.now();
-    if (run.status === 'PAUSED') return { next: 'wait', resumeAt: null };
+    if (run.status === 'PAUSED' || run.status === 'PARKED') return { next: 'wait', resumeAt: null };
     if (run.status === 'WAITING') {
       if (run.checkpoint.pendingApprovalId) return { next: 'wait', resumeAt: null };
       if (run.resumeAt && run.resumeAt.getTime() > now.getTime()) return { next: 'wait', resumeAt: run.resumeAt };
     }
 
-    const [task, project] = await Promise.all([this.deps.tasks.get(run.taskId), this.deps.projects.get(run.projectId)]);
-    if (!task || !project) {
+    const [task, baseProject, session] = await Promise.all([
+      this.deps.tasks.get(run.taskId),
+      this.deps.projects.get(run.projectId),
+      run.sessionId && this.deps.autopilotSessions ? this.deps.autopilotSessions.get(run.sessionId) : Promise.resolve(null),
+    ]);
+    if (!task || !baseProject) {
       run.status = 'FAILED';
       run.error = 'task or project no longer exists';
       run.finishedAt = now;
       return this.persist(run, { next: 'done', status: 'FAILED' });
     }
 
-    const stop = checkStopConditions(run, run.limits, now);
+    // Safety net for a kill that lost a race against this run: never execute a stage of a killed session.
+    if (session?.status === 'killed') {
+      const reason = `Autopilot session ${session.id} was killed.`;
+      run.status = 'PAUSED';
+      run.resumeAt = null;
+      run.checkpoint.notes.push(`paused: ${reason}`);
+      await this.deps.tasks.update(task.id, { status: 'PAUSED', blockedReason: reason });
+      return this.persist(run, { next: 'wait', resumeAt: null });
+    }
+    // A run started in a session keeps the capped autonomy and hard gates until it finishes, also after a graceful
+    // stop: ending a session only ever removes autonomy. Approvals are deferred (parked) only while it is active.
+    // A human resume detaches the run from an ended session (see `resume`).
+    const activeSession = session?.status === 'active' ? session : null;
+    const project = session ? applyAutopilotSession(baseProject, session, this.options.autopilot) : baseProject;
+
+    const stop = checkStopConditions({ ...run, parkedMs: run.checkpoint.parkedMs ?? 0 }, run.limits, now);
     if (stop.stop) {
       await this.block(run, task, project, `Stop condition "${stop.reason}" reached: ${stop.detail}.`);
       return this.persist(run, { next: 'done', status: run.status });
@@ -269,23 +368,11 @@ export class Orchestrator {
 
     const { highCostThresholdUsd, approvalGates } = project.settings;
     if (approvalGates.high_cost && highCostThresholdUsd > 0 && run.costUsd >= highCostThresholdUsd && !run.checkpoint.approvedActions.includes('high_cost')) {
-      const approval = await this.deps.approvals.create({
-        projectId: project.id,
-        taskId: task.id,
-        runId: run.id,
-        action: 'high_cost',
-        reason: `Run has spent $${run.costUsd.toFixed(2)}, above the $${highCostThresholdUsd.toFixed(2)} threshold.`,
-        risk: 'medium',
-        details: { costUsd: run.costUsd },
-      });
-      await this.deps.events.emit({
-        type: 'approval.required',
-        projectId: project.id,
-        taskId: task.id,
-        runId: run.id,
-        payload: { approvalId: approval.id, action: 'high_cost', risk: 'medium', reason: approval.reason },
-      });
-      return this.persist(run, await this.apply(run, task, project, run.currentStage ?? 'INTAKE', { kind: 'wait', summary: approval.reason, resumeAt: null, approvalId: approval.id }, now));
+      const outcome = await requestRunApproval(
+        { deps: this.deps, options: this.options, run, task, project, session: activeSession, now },
+        { action: 'high_cost', reason: `Run has spent $${run.costUsd.toFixed(2)}, above the $${highCostThresholdUsd.toFixed(2)} threshold.`, risk: 'medium', details: { costUsd: run.costUsd } },
+      );
+      return this.persist(run, await this.apply(run, task, project, run.currentStage ?? 'INTAKE', outcome, now));
     }
 
     const stage = run.currentStage ?? nextPlannedStage(run.stagePlan, null);
@@ -306,7 +393,7 @@ export class Orchestrator {
       state.status = 'running';
     }
 
-    const ctx = { deps: this.deps, options: this.options, tools: this.tools, run, task, project, now };
+    const ctx = { deps: this.deps, options: this.options, tools: this.tools, run, task, project, now, session: activeSession };
     let outcome: StageOutcome;
     try {
       outcome = await HANDLERS[stage](ctx);
@@ -321,7 +408,7 @@ export class Orchestrator {
     return this.persist(run, await this.apply(run, ctx.task, project, stage, outcome, now));
   }
 
-  /** Resumes a run after a human decided on its pending approval. */
+  /** Resumes a run after a human decided on its pending approval (WAITING, or PARKED by the autopilot). */
   async onApprovalDecided(approvalId: string): Promise<StepResult | null> {
     const approval = await this.deps.approvals.get(approvalId);
     if (!approval?.runId || approval.status === 'pending') return null;
@@ -331,18 +418,23 @@ export class Orchestrator {
     const [task, project] = await Promise.all([this.deps.tasks.get(run.taskId), this.deps.projects.get(run.projectId)]);
     if (!task || !project) return null;
 
+    const status = approval.status === 'approved' ? 'approved' : approval.status === 'expired' ? 'expired' : 'rejected';
     await this.deps.events.emit({
       type: 'approval.decided',
       projectId: project.id,
       taskId: task.id,
       runId: run.id,
-      payload: {
-        approvalId: approval.id,
-        status: approval.status === 'approved' ? 'approved' : approval.status === 'expired' ? 'expired' : 'rejected',
-        by: approval.decidedBy ?? 'unknown',
-      },
+      payload: { approvalId: approval.id, status, by: approval.decidedBy ?? 'unknown' },
     });
     run.checkpoint.pendingApprovalId = null;
+    if (run.status === 'PARKED') {
+      // Waiting for a human while away is not run time: without this, approving after a long absence would block the
+      // run on max_runtime immediately.
+      const parkedFor = Math.max(0, this.deps.clock.now().getTime() - approval.requestedAt.getTime());
+      run.checkpoint.parkedMs = (run.checkpoint.parkedMs ?? 0) + parkedFor;
+      await this.deps.events.emit({ type: 'autopilot.run.unparked', projectId: project.id, taskId: task.id, runId: run.id, payload: { sessionId: run.sessionId, approvalId: approval.id, status } });
+      await this.audit('autopilot.run.unpark', run.id, { sessionId: run.sessionId, approvalId: approval.id, status, by: approval.decidedBy ?? 'unknown' });
+    }
 
     if (approval.status !== 'approved') {
       const note = approval.comment ? `: ${approval.comment}` : '';
@@ -363,13 +455,45 @@ export class Orchestrator {
     return this.persist(run, { next: 'continue' });
   }
 
-  /** Resumes a PAUSED run (e.g. after the budget was raised). */
+  /**
+   * Resumes a PAUSED run (e.g. after the budget was raised). Resuming is a human action: a run of a session that is no
+   * longer active is detached from it and continues with the project's own autonomy and gates.
+   */
   async resume(runId: string): Promise<StepResult | null> {
     const run = await this.deps.runs.get(runId);
     if (!run || run.status !== 'PAUSED') return null;
+    if (run.sessionId && this.deps.autopilotSessions) {
+      const session = await this.deps.autopilotSessions.get(run.sessionId);
+      if (!session || session.status !== 'active') {
+        run.checkpoint.notes.push(`detached from autopilot session ${run.sessionId} (${session?.status ?? 'missing'}) on resume`);
+        await this.audit('autopilot.run.detach', run.id, { sessionId: run.sessionId, sessionStatus: session?.status ?? null });
+        run.sessionId = null;
+      }
+    }
     run.status = 'RUNNING';
     await this.deps.tasks.update(run.taskId, { status: 'RUNNING' });
     return this.persist(run, { next: 'continue' });
+  }
+
+  /** Pauses an in-flight run (kill switch). Bounded retries; a run that keeps racing is paused by its next step. */
+  async pause(runId: string, reason: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const run = await this.deps.runs.get(runId);
+      if (!run || !PAUSABLE.includes(run.status)) return false;
+      run.status = 'PAUSED';
+      run.resumeAt = null;
+      run.checkpoint.notes.push(`paused: ${truncate(reason, 300)}`);
+      try {
+        await this.deps.runs.save(run);
+      } catch (error) {
+        if (error instanceof ConcurrentModificationError) continue;
+        throw error;
+      }
+      await this.deps.tasks.update(run.taskId, { status: 'PAUSED', blockedReason: truncate(reason, 2000) });
+      await this.audit('autopilot.run.pause', run.id, { sessionId: run.sessionId, reason: truncate(reason, 500) });
+      return true;
+    }
+    return false;
   }
 
   async cancel(runId: string, reason: string): Promise<boolean> {
@@ -464,6 +588,22 @@ export class Orchestrator {
           await this.deps.projects.update(project.id, { status: 'WAITING' });
         }
         return { next: 'wait', resumeAt: outcome.resumeAt };
+      }
+
+      case 'parked': {
+        // Deferred approval inside an autopilot session: the human still decides, but the run frees its slot and the
+        // project is not marked as waiting, so the scheduler continues with other work.
+        await mark('waiting', outcome.summary);
+        run.status = 'PARKED';
+        run.resumeAt = null;
+        run.checkpoint.pendingApprovalId = outcome.approvalId;
+        run.checkpoint.notes.push(`parked for a human: ${truncate(outcome.reason, 300)}`);
+        await this.deps.tasks.update(task.id, { status: 'WAITING_APPROVAL' });
+        const payload = { sessionId: outcome.sessionId, approvalId: outcome.approvalId, action: outcome.action, reason: truncate(outcome.reason, 500), expiresAt: outcome.expiresAt?.toISOString() ?? null };
+        await this.deps.events.emit({ type: 'autopilot.run.parked', ...base, payload });
+        await this.audit('autopilot.run.park', run.id, { ...payload, projectId: project.id, taskId: task.id });
+        await this.refreshProjectStatus(project.id, run.id, 'IDLE');
+        return { next: 'wait', resumeAt: null };
       }
 
       case 'paused': {
@@ -574,7 +714,7 @@ export class Orchestrator {
   }
 
   private async refreshProjectStatus(projectId: string, finishedRunId: string, idleStatus: 'IDLE' | 'DEPLOYED'): Promise<void> {
-    const active = (await this.deps.runs.list({ projectId, statuses: ACTIVE_STATUSES, limit: 10 })).filter((r) => r.id !== finishedRunId);
+    const active = (await this.deps.runs.list({ projectId, statuses: SLOT_HOLDING_RUN_STATUSES, limit: 10 })).filter((r) => r.id !== finishedRunId);
     if (active.length === 0) await this.deps.projects.update(projectId, { status: idleStatus });
   }
 
@@ -583,6 +723,10 @@ export class Orchestrator {
     if (result.next === 'continue') await this.enqueueStep(saved);
     else if (result.next === 'wait' && result.resumeAt) await this.enqueueStep(saved, result.resumeAt);
     return result;
+  }
+
+  private async audit(action: string, target: string, details: Record<string, unknown>): Promise<void> {
+    await this.deps.audit?.({ actorType: 'system', actorId: 'orchestrator', action, target, details });
   }
 
   private enqueueStep(run: Pick<PipelineRun, 'id' | 'version'>, runAt?: Date): Promise<void> {

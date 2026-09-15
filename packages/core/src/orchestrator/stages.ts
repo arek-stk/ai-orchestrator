@@ -3,6 +3,7 @@ import { dependencyApprovalDetails, dependencyApprovalGrant, describeDependencyF
 import { detectGatedActions, requiresApproval } from '../approval/policy';
 import { runCouncil } from '../agents/council';
 import { AGENT_DEFINITIONS, type AgentInput } from '../agents/definitions';
+import { deferredApprovalExpiry, type AutopilotSession } from '../autopilot/session';
 import type { AgentFailure } from '../agents/runtime';
 import {
   AnalysisOutputSchema,
@@ -39,6 +40,8 @@ export type StageOutcome =
   /** The stage itself failed (agent error, invalid output); run it again later. */
   | { kind: 'retry_stage'; summary: string }
   | { kind: 'wait'; summary: string; resumeAt: Date | null; approvalId?: string }
+  /** Autopilot: a deferred approval parks the run for a human without holding a concurrency slot. */
+  | { kind: 'parked'; summary: string; approvalId: string; sessionId: string; action: ApprovalAction; reason: string; expiresAt: Date | null }
   | { kind: 'paused'; reason: string }
   | { kind: 'blocked'; reason: string }
   /** The run completes early with this outcome (e.g. decomposed into sub-tasks). */
@@ -50,8 +53,11 @@ export interface StageContext {
   tools: ToolRouter;
   run: PipelineRun;
   task: Task;
+  /** Project as seen by this run: with an active autopilot session, autonomy is capped and every gate is hard. */
   project: Project;
   now: Date;
+  /** The run's autopilot session while it is active; null outside sessions. */
+  session: AutopilotSession | null;
 }
 
 export type StageHandler = (ctx: StageContext) => Promise<StageOutcome>;
@@ -75,6 +81,7 @@ export function toolContext(ctx: StageContext, role: AgentRole, workspace?: Tool
     taskId: ctx.task.id,
     runId: ctx.run.id,
     approvedActions: ctx.run.checkpoint.approvedActions,
+    sessionId: ctx.run.sessionId,
     ...(workspace ? { workspace } : {}),
   };
 }
@@ -128,23 +135,67 @@ export function onAgentFailure(ctx: StageContext, failure: AgentFailure<unknown>
 }
 
 export async function requestApproval(ctx: StageContext, action: ApprovalAction, reason: string, details: Record<string, unknown>, risk?: Risk): Promise<StageOutcome> {
-  const approval = await ctx.deps.approvals.create({
-    projectId: ctx.project.id,
-    taskId: ctx.task.id,
-    runId: ctx.run.id,
-    action,
-    reason,
-    risk: risk ?? (ctx.task.risk === 'low' ? 'medium' : ctx.task.risk),
-    details,
+  return requestRunApproval(ctx, { action, reason, details, risk: risk ?? (ctx.task.risk === 'low' ? 'medium' : ctx.task.risk) });
+}
+
+export interface RunApprovalRequest {
+  action: ApprovalAction;
+  reason: string;
+  risk: Risk;
+  details: Record<string, unknown>;
+}
+
+/**
+ * Creates an approval for a run. Outside a session it blocks the run (WAITING, ADR-023 expiry). Inside an active
+ * autopilot session it is deferred: the run parks without a slot and the approval stays valid until the session ends
+ * plus the return grace period (never beyond the hard maximum). Only a human can decide either kind.
+ */
+export async function requestRunApproval(
+  target: Pick<StageContext, 'deps' | 'options' | 'run' | 'task' | 'project' | 'session' | 'now'>,
+  request: RunApprovalRequest,
+): Promise<StageOutcome> {
+  const { deps, options, run, task, project, session } = target;
+  const expiresAt = session
+    ? deferredApprovalExpiry({
+        requestedAt: target.now,
+        ttlMs: options.approvalTtlMs,
+        sessionEndsAt: session.endsAt,
+        returnGraceMs: options.autopilot.returnGraceMs,
+        maxApprovalLifetimeMs: options.autopilot.maxApprovalLifetimeMs,
+      })
+    : null;
+  const mode = session ? 'deferred' : 'blocking';
+  const approval = await deps.approvals.create({
+    projectId: project.id,
+    taskId: task.id,
+    runId: run.id,
+    action: request.action,
+    reason: request.reason,
+    risk: request.risk,
+    details: request.details,
+    mode,
+    sessionId: session?.id ?? null,
+    expiresAt,
   });
-  await ctx.deps.events.emit({
+  await deps.events.emit({
     type: 'approval.required',
-    projectId: ctx.project.id,
-    taskId: ctx.task.id,
-    runId: ctx.run.id,
-    payload: { approvalId: approval.id, action, risk: approval.risk, reason },
+    projectId: project.id,
+    taskId: task.id,
+    runId: run.id,
+    payload: { approvalId: approval.id, action: request.action, risk: approval.risk, reason: request.reason, mode },
   });
-  return { kind: 'wait', summary: `Waiting for human approval: ${action}`, resumeAt: null, approvalId: approval.id };
+  if (session) {
+    return {
+      kind: 'parked',
+      summary: `Parked for human approval: ${request.action}`,
+      approvalId: approval.id,
+      sessionId: session.id,
+      action: request.action,
+      reason: request.reason,
+      expiresAt,
+    };
+  }
+  return { kind: 'wait', summary: `Waiting for human approval: ${request.action}`, resumeAt: null, approvalId: approval.id };
 }
 
 /**

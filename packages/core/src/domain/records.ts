@@ -98,6 +98,12 @@ export interface MemoryItem {
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 export type ApprovalAction = GatedAction | 'publish_changes';
+/**
+ * blocking: the run waits in WAITING and holds its slot (ADR-023 expiry).
+ * deferred: requested inside an autopilot session; the run is PARKED without a slot and the approval expires only
+ * after the session ends plus a grace period, capped by a hard maximum.
+ */
+export type ApprovalMode = 'blocking' | 'deferred';
 
 export interface Approval {
   id: string;
@@ -113,6 +119,11 @@ export interface Approval {
   decidedBy: string | null;
   decidedAt: Date | null;
   comment: string | null;
+  mode: ApprovalMode;
+  /** Autopilot session the approval was deferred in. */
+  sessionId: string | null;
+  /** Explicit expiry (deferred approvals); null = requestedAt + APPROVAL_TTL_HOURS. */
+  expiresAt: Date | null;
 }
 
 export interface UsageEntry {
