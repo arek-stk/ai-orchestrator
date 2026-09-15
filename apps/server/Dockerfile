@@ -2,16 +2,17 @@
 # Production image of the orchestrator server (ADR-020). Build from the repository root:
 #   docker build -f apps/server/Dockerfile -t ai-orchestrator-server .
 
-FROM node:24-slim AS build
+FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS build
 WORKDIR /repo
 ENV CI=true NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false
 COPY . .
 RUN npm ci
 RUN npm run build --workspace @orch/server
-# Install the few dependencies that are not bundled (PGlite) next to the bundle.
-RUN cd apps/server/dist && npm install --omit=dev --no-package-lock
+# Install the few dependencies that are not bundled (PGlite) next to the bundle. build.mjs writes their exact
+# installed versions into dist/package.json; none of them needs install scripts.
+RUN cd apps/server/dist && npm install --omit=dev --no-package-lock --ignore-scripts
 
-FROM node:24-slim AS runtime
+FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4000 \
