@@ -16,6 +16,7 @@ import {
   Moon,
   Settings,
   ShieldCheck,
+  Sparkles,
   Sun,
   X,
   type LucideIcon,
@@ -52,6 +53,7 @@ const SECTION_LABELS: Record<string, string> = {
   approvals: 'Approvals',
   decisions: 'Decisions',
   costs: 'Costs',
+  hub: 'AI Hub',
   settings: 'Settings',
   projects: 'Projects',
 };
@@ -99,6 +101,8 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   badge?: number;
+  /** Short text label such as "Neu". */
+  tag?: string;
 }
 
 function isActive(pathname: string, href: string): boolean {
@@ -129,6 +133,21 @@ function NavList({ items, pathname, mode, onNavigate }: { items: NavItem[]; path
           >
             <item.icon aria-hidden="true" size={16} strokeWidth={active ? 2.25 : 1.75} className={active ? 'text-ink' : 'text-ink-2'} />
             <span className={cx('flex-1 truncate', responsive && 'sr-only lg:not-sr-only')}>{item.label}</span>
+            {item.tag ? (
+              <>
+                {/* Same look as the "Neu" badge next to the AI Hub page title (hub/primitives.tsx NEW_BADGE_CLASS).
+                    Toggled with hidden/inline-flex: `not-sr-only` would reset the badge's padding and height. */}
+                <span className={cx('h-5 shrink-0 items-center rounded-full bg-hub-cta px-2 text-[11px] font-semibold leading-none text-white', responsive ? 'hidden lg:inline-flex' : 'inline-flex')}>
+                  {item.tag}
+                </span>
+                {responsive ? (
+                  <>
+                    <span className="sr-only lg:hidden">{item.tag}</span>
+                    <span aria-hidden="true" className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-hub-cta lg:hidden" />
+                  </>
+                ) : null}
+              </>
+            ) : null}
             {item.badge ? (
               <span
                 aria-label={`${item.badge} pending`}
@@ -348,6 +367,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     { href: '/', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/projects', label: 'Projects', icon: FolderKanban },
     { href: '/agents', label: 'Agents', icon: Bot },
+    { href: '/hub', label: 'AI Hub', icon: Sparkles, tag: 'Neu' },
     { href: '/approvals', label: 'Approvals', icon: ShieldCheck, badge: pendingCount },
     { href: '/decisions', label: 'Decisions', icon: Lightbulb },
     { href: '/costs', label: 'Costs', icon: Coins },
