@@ -14,6 +14,7 @@ import {
   Menu,
   Monitor,
   Moon,
+  Plane,
   Settings,
   ShieldCheck,
   Sun,
@@ -24,6 +25,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useApi } from '@/hooks/use-api';
 import { useLiveEvents } from '@/hooks/use-live-events';
 import type { Approval } from '@/lib/types';
+import { AutopilotBanner, AutopilotButton } from './autopilot';
 import { useSession, useTheme, type ThemePreference } from './providers';
 import { cx, ErrorBanner, IconButton, OrchestratorMark, Skeleton } from './ui';
 
@@ -50,6 +52,7 @@ export function useBreadcrumb(items: Crumb[] | null): void {
 const SECTION_LABELS: Record<string, string> = {
   agents: 'Agents',
   approvals: 'Approvals',
+  autopilot: 'Autopilot',
   decisions: 'Decisions',
   costs: 'Costs',
   settings: 'Settings',
@@ -61,6 +64,7 @@ function defaultCrumbs(pathname: string): Crumb[] {
   const [, section] = pathname.split('/');
   if (pathname.startsWith('/projects/')) return [{ label: 'Projects', href: '/projects' }, { label: 'Project' }];
   if (pathname.startsWith('/runs/')) return [{ label: 'Projects', href: '/projects' }, { label: 'Run' }];
+  if (pathname.startsWith('/autopilot/')) return [{ label: 'Autopilot', href: '/autopilot' }, { label: 'Session' }];
   return [{ label: SECTION_LABELS[section ?? ''] ?? 'Dashboard' }];
 }
 
@@ -349,6 +353,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     { href: '/projects', label: 'Projects', icon: FolderKanban },
     { href: '/agents', label: 'Agents', icon: Bot },
     { href: '/approvals', label: 'Approvals', icon: ShieldCheck, badge: pendingCount },
+    { href: '/autopilot', label: 'Autopilot', icon: Plane },
     { href: '/decisions', label: 'Decisions', icon: Lightbulb },
     { href: '/costs', label: 'Costs', icon: Coins },
     { href: '/settings', label: 'Settings', icon: Settings },
@@ -392,6 +397,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="min-w-0 flex-1">
               <Breadcrumbs items={crumbs} />
             </div>
+            <AutopilotButton />
             <LiveIndicator />
             {demoMode ? (
               <span
@@ -408,6 +414,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
             <UserMenu />
           </header>
+          <AutopilotBanner />
           <main id="main" className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
             {children}
             <div className="mt-10 flex justify-center sm:hidden">

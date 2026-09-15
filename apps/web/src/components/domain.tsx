@@ -5,6 +5,7 @@ import {
   Bot,
   Bug,
   Check,
+  CircleParking,
   CirclePause,
   Cloud,
   Compass,
@@ -56,7 +57,8 @@ import { Button, Chip, cx, EmptyState, JsonDetails, Mono, RelativeTime, StatusBa
 // ---------------------------------------------------------------------------
 
 export function RunStatusBadge({ status }: { status: RunStatus }) {
-  return <StatusBadge tone={runStatusTone(status)} label={humanize(status)} {...(status === 'PAUSED' ? { icon: CirclePause } : {})} />;
+  const icon = status === 'PAUSED' ? CirclePause : status === 'PARKED' ? CircleParking : undefined;
+  return <StatusBadge tone={runStatusTone(status)} label={humanize(status)} {...(icon ? { icon } : {})} {...(status === 'PARKED' ? { title: 'Waiting for a human decision; holds no concurrency slot' } : {})} />;
 }
 
 export function TaskStatusBadge({ status, title }: { status: TaskStatus; title?: string }) {
@@ -584,8 +586,24 @@ export function ApprovalCard({ approval, projectName, onDecided }: { approval: A
     }
   };
 
+  const parked = approval.mode === 'deferred';
+
   return (
-    <article className="rounded-[10px] border border-line bg-surface p-5">
+    <article className={cx('rounded-[10px] border bg-surface p-5', parked ? 'border-warning/60 border-l-4' : 'border-line')}>
+      {parked ? (
+        <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-2">
+          <span className="inline-flex h-[22px] items-center gap-1.5 rounded-full bg-warning-soft px-2 font-medium text-ink">
+            <CircleParking aria-hidden="true" size={12} className="text-warning" />
+            Parked by the autopilot
+          </span>
+          {approval.status === 'pending' && approval.expiresAt ? (
+            <span>
+              Valid until <time dateTime={approval.expiresAt}>{new Date(approval.expiresAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</time>
+            </span>
+          ) : null}
+          {approval.sessionId ? <TextLink href={`/autopilot/${approval.sessionId}`}>Session digest</TextLink> : null}
+        </p>
+      ) : null}
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-ink">{humanize(approval.action)}</h3>

@@ -71,6 +71,20 @@ export function describeEvent(event: DomainEvent): string {
       return `Room: ${str(p.authorName)} posted ${p.threadId ? 'a reply' : `a ${humanize(str(p.intent)).toLowerCase()}`}`;
     case 'scheduler.tick':
       return `Scheduler selected ${num(p.selected)} task(s), skipped ${num(p.skipped)}`;
+    case 'autopilot.session.started':
+      return `Autopilot started (budget ${formatUsd(num(p.budgetUsd))}, autonomy level ${num(p.effectiveAutonomy)})`;
+    case 'autopilot.session.resumed':
+      return 'Autopilot session resumed after a server restart';
+    case 'autopilot.session.stopped':
+      return `Autopilot stopped (${humanize(str(p.reason))}) by ${str(p.by)}`;
+    case 'autopilot.session.killed':
+      return `Autopilot killed by ${str(p.by)}: ${num(p.pausedRuns)} run(s) paused`;
+    case 'autopilot.run.started':
+      return `Autopilot started a run at autonomy level ${num(p.effectiveAutonomy)}`;
+    case 'autopilot.run.parked':
+      return `Run parked for a human: ${humanize(str(p.action))}`;
+    case 'autopilot.run.unparked':
+      return `Parked run ${str(p.status)}`;
     default:
       return humanize(event.type);
   }
@@ -86,8 +100,8 @@ export function isUnverified(text: string | null | undefined): boolean {
 export function eventTone(event: DomainEvent): Tone {
   const type = event.type;
   if (type.endsWith('.failed') || type === 'budget.exhausted') return 'critical';
-  if (type.endsWith('.blocked')) return 'serious';
-  if (type === 'approval.required') return 'warning';
+  if (type.endsWith('.blocked') || type === 'autopilot.session.killed') return 'serious';
+  if (type === 'approval.required' || type === 'autopilot.run.parked') return 'warning';
   if (type === 'pipeline.stage.completed') {
     const status = str(event.payload?.status);
     if (status === 'failed') return 'critical';
