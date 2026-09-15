@@ -303,15 +303,27 @@ Format: context → decision → consequences → status.
     Covered: `package.json` (dependencies, devDependencies, optional, peer; aliases and Git/URL sources),
     `requirements*.txt` (including new package indexes), `pyproject.toml` (PEP 621, optional and dependency groups,
     build requires, Poetry, uv, PDM), `Pipfile`, `Cargo.toml`, `go.mod`, `Gemfile`, `composer.json`, `*.csproj` and
-    NuGet props, `pom.xml`, `build.gradle(.kts)` and Gradle version catalogs; lockfile-only additions (direct
-    dependencies in `package-lock.json`, `pnpm-lock.yaml`, `bun.lock`, `Gemfile.lock`, NuGet `packages.lock.json`;
-    flat lockfiles such as `yarn.lock`, `Cargo.lock`, `poetry.lock`/`uv.lock`, `Pipfile.lock`, `composer.lock`, `go.sum`
-    only when no manifest of that ecosystem changed); workflow and composite-action `uses:`; `.mcp.json` (identity is
-    the launched package, image or URL); `.claude/settings.json` plugins, marketplaces and MCP enablement;
+    NuGet props, `pom.xml`, `build.gradle(.kts)` and Gradle version catalogs, plus `package.json`
+    `overrides`/`resolutions`/`pnpm.overrides` and Cargo `[patch]`/`[replace]` that swap a package or its source, and
+    files a changed requirements file includes with `-r`; workflow and composite-action `uses:`; `.mcp.json` (identity
+    is the launched package, image or URL); `.claude/settings.json` plugins, marketplaces and MCP enablement;
     `.vscode/extensions.json` recommendations. Version bumps and removals are not gated; they stay with the
     Dependabot/review flow.
+  * Lockfiles are always parsed and diffed, whether or not a manifest changed in the same change set (review fix: a
+    manifest bump must not hide a package smuggled into the lockfile). Every installed package counts, not only direct
+    dependencies: `package-lock.json`/`npm-shrinkwrap.json` v1, v2 (both sections) and v3 including nested
+    `node_modules` entries, `pnpm-lock.yaml` importers and packages, `bun.lock` workspaces and packages, `yarn.lock`,
+    `Gemfile.lock` specs, NuGet `packages.lock.json` direct and transitive entries, `Cargo.lock`,
+    `poetry.lock`/`uv.lock`/`pdm.lock`, `Pipfile.lock`, `composer.lock`, `go.sum` and `gradle.lockfile`. A package
+    downloaded from somewhere other than the default registry (npm, Cargo, gems) carries its source in the identity,
+    so a swap to a fork counts as an addition. A lockfile entry is dropped only when a manifest addition of the same
+    package in this change set covers it and the lockfile does not install it from another source. Remaining entries
+    are reported with a label: "Added to the lockfile without a matching manifest entry" when no manifest of the
+    ecosystem changed in the lockfile's tree, otherwise "Lockfile addition not declared in manifest (possibly
+    transitive)". Approvals list declared additions first and lockfile findings as their own group.
   * Parsers are linear scanners without backtracking regular expressions. Unparsable or oversized manifests count as
-    a possible addition, with the reason stated, and are gated.
+    a possible addition, with the reason stated, and are gated. A binary or unparsable lockfile (`bun.lockb`) that
+    changed is reported as "possible addition, cannot inspect", also when only an existing dependency was bumped.
   * The approval lists the findings with a registry link built from a fixed per-ecosystem URL template and a
     validated name (rebuilt when the API reads it, never taken from repository text), plus a risk hint: GitHub
     Actions, MCP servers, Claude plugins and VS Code extensions are high risk. The approvals API adds a typed
@@ -324,6 +336,9 @@ Format: context → decision → consequences → status.
     approval; grants are never reused by other runs or tasks.
 * **Consequences:** Relation to ADR-013: auto-accepted health-scan proposals still hit this gate when their change set
   adds a dependency; auto-acceptance never implies dependency approval. A new workflow `uses:` needs both the
-  `critical_infrastructure` and the `dependency_addition` approval. Transitive packages are not reviewed one by one.
-  Hooks and devcontainer features are not covered yet.
+  `critical_infrastructure` and the `dependency_addition` approval. New transitive packages appear in the approval as
+  labelled lockfile findings, so a legitimate new direct dependency usually brings a group of them; a binary lockfile
+  is gated on every change. Hooks, devcontainer features, `[tool.uv.sources]`/package indexes in `pyproject.toml`,
+  `.gemspec` dependencies, pnpm tarball sources and includes of requirements files that are not in the change set are
+  not covered yet.
 * **Status:** Accepted (2026-09-14)
