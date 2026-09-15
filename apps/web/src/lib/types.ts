@@ -439,6 +439,7 @@ export const EVENT_TYPES = [
   'approval.required', 'approval.decided',
   'budget.exhausted',
   'scheduler.tick',
+  'room.message',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -450,6 +451,80 @@ export interface DomainEvent {
   runId: string | null;
   payload: Record<string, unknown>;
   createdAt: ISODate;
+}
+
+// ---------------------------------------------------------------------------
+// Project Room (conversation model, ADR-030)
+// ---------------------------------------------------------------------------
+
+export type MessageAuthorType = 'human' | 'assistant' | 'orchestrator' | 'agent' | 'external_ai' | 'system';
+export type MessageIntent =
+  | 'message'
+  | 'question'
+  | 'answer'
+  | 'status'
+  | 'decision'
+  | 'decision_request'
+  | 'claim'
+  | 'release'
+  | 'handoff'
+  | 'objection'
+  | 'clarifying_question'
+  | 'brief_update'
+  | 'suggestion';
+/** Intents a person may post in stage 1. */
+export const HUMAN_MESSAGE_INTENTS = ['message', 'question', 'answer'] as const;
+export type HumanMessageIntent = (typeof HUMAN_MESSAGE_INTENTS)[number];
+export const MAX_MESSAGE_LENGTH = 8000;
+
+export interface MessageRefs {
+  taskId?: string;
+  runId?: string;
+  decisionId?: string;
+  approvalId?: string;
+  conversationId?: string;
+  stage?: string;
+  paths?: string[];
+}
+
+export interface Conversation {
+  id: string;
+  projectId: string | null;
+  kind: string;
+  title: string;
+  status: string;
+  messageCount: number;
+  lastActivityAt: ISODate;
+  createdAt: ISODate;
+}
+
+export interface ConversationMessage {
+  id: string;
+  seq: number;
+  conversationId: string;
+  projectId: string | null;
+  threadId: string | null;
+  authorType: MessageAuthorType;
+  authorId: string | null;
+  authorName: string;
+  intent: MessageIntent;
+  body: string;
+  refs: MessageRefs;
+  replyCount: number;
+  lastReplyAt: ISODate | null;
+  createdAt: ISODate;
+}
+
+export interface RoomMessagesResponse {
+  conversation: Conversation;
+  messages: ConversationMessage[];
+  hasMore: boolean;
+}
+
+export interface RoomThreadResponse {
+  root: ConversationMessage;
+  replies: ConversationMessage[];
+  hasMore: boolean;
 }
 
 // ---------------------------------------------------------------------------
