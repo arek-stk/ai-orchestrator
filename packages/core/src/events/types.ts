@@ -1,5 +1,6 @@
 import type { AgentRole, RunStage, StageStatus } from '../domain/enums';
 import type { GatedAction } from '../domain/project';
+import type { MessageAuthorType, MessageIntent } from '../room/types';
 
 /** Typed payloads for every domain event (spec §20). */
 export interface EventPayloads {
@@ -41,6 +42,8 @@ export interface EventPayloads {
   'improvement.dismissed': { proposalId: string; by: string; reason: string | null };
   'release.readiness': { verdict: 'ready' | 'not_ready'; blockers: string[] };
   'research.completed': { memoryKey: string; question: string; confidence: number };
+  /** Content-free: clients load the message through the room API (ADR-030). */
+  'room.message': { conversationId: string; messageId: string; seq: number; threadId: string | null; authorType: MessageAuthorType; authorName: string; intent: MessageIntent };
 }
 
 export type EventType = keyof EventPayloads;

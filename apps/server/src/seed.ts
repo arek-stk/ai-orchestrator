@@ -97,5 +97,29 @@ export async function seedDemoData(container: Container): Promise<boolean> {
     }),
     null,
   );
+  await seedDemoRoom(container, shop.id);
   return true;
+}
+
+/** A short conversation so the demo room is not empty; pipeline notices follow as soon as the demo runs start. */
+async function seedDemoRoom(container: Container, projectId: string): Promise<void> {
+  const system = { type: 'system' as const, id: null, name: 'System' };
+  const orchestrator = { type: 'orchestrator' as const, id: null, name: 'Orchestrator' };
+  const maria = { type: 'human' as const, id: null, name: 'maria (demo)' };
+  const jonas = { type: 'human' as const, id: null, name: 'jonas (demo)' };
+  await container.room.post({
+    projectId,
+    author: system,
+    intent: 'status',
+    body: 'Welcome to the Demo Shop room. People, the orchestrator and its agents post here; stage results, approvals and decisions of pipeline runs appear automatically.',
+  });
+  const question = await container.room.post({ projectId, author: maria, intent: 'question', body: 'Should product search also match SKUs? Support pastes them from invoices.' });
+  await container.room.post({
+    projectId,
+    author: jonas,
+    intent: 'answer',
+    threadId: question.message.id,
+    body: 'Not in the first version. Name search first, SKUs as a follow-up task. Background: https://github.com/demo/shop#readme',
+  });
+  await container.room.post({ projectId, author: orchestrator, intent: 'status', body: 'Two tasks are ready: "Add product search" and "Fix README typo". Progress shows up here.' });
 }

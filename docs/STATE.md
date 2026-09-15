@@ -30,6 +30,7 @@ Architecture: `docs/ARCHITECTURE.md` · Decisions: `docs/DECISIONS.md`.
 | 17 | Autonomous product improvement (ADR-013): Project Health Scan (deterministic signals + score, heuristic, scan-agent and DevOps proposals, ROI priority, fingerprint dedupe, guarded auto-acceptance into BACKLOG tasks, daily scheduling), migration `0001` (`health_scans`, `improvement_proposals`) | ✅ done | 13 core tests · 5 repository tests · 5 API tests |
 | 18 | Specialists (ADR-015): documentation agent + `docs.write` for docs tasks, release readiness gate before DEPLOY, DevOps review in scans, research on explicit request | ✅ done | verify-check tests · 5 pipeline scenarios |
 | 19 | Caching (ADR-014): TTL agent output cache in `cache_entries` (hard deny-list for code-changing agents, savings in usage ledger and cost stats), sha-keyed file summaries used by the context builder | ✅ done | 4 cache tests · summarizer and repository tests |
+| 20 | Project Room stage 1 (ADR-030 + addendum): unified `conversations`/`conversation_messages` (migration `0002`), room service (sanitising, redaction, threads, seq cursors), bounded and deduplicated projection of orchestrator events, room API with RBAC/ACL/rate limit/audit and SSE, Room tab, demo seed | 🚧 in review | 13 core + 2 pipeline scenarios · 5 repository tests · 8 API tests incl. SSE replay |
 
 ## Known constraints on the dev machine
 * Docker daemon not running → sandbox defaults to `SANDBOX=none` (verification delegated to CI).
@@ -45,7 +46,7 @@ workflow `uses:`, MCP/Claude/editor configs. It will be the `dependency_addition
 
 1. ✅ **Health scan, agent output cache, specialist agents**: PR #12 merged (rows 17–19), including the concurrent-scan fix.
 1a. 🚧 **`dependency_addition` approval gate**: every new dependency needs human approval (in progress).
-2. **Project Room + MCP server, leases, Kanban, milestones, roadmap**: ADR-030, `docs/plans/project-room.md`.
+2. 🚧 **Project Room + MCP server, leases, Kanban, milestones, roadmap**: ADR-030, `docs/plans/project-room.md`. Stage 1 (room on the unified conversation model) in review (row 20).
 3. **Autopilot / away mode**: time- and budget-boxed unattended work. Questions are resolved via decision memory, then research, then an agent council with a critic on a different model; anything risky is parked for the human; there is a return digest. See `docs/plans/autopilot.md`.
 
 Proposed, not yet scheduled:
