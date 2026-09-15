@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/arek-stk/ai-orchestrator/compare/v0.2.0...v0.3.0) (2026-09-15)
+
+
+### Features
+
+* platform operations, per-project access control and deployment ([ae9644c](https://github.com/arek-stk/ai-orchestrator/commit/ae9644cebd075f30666d62d29f22a93f9a31eb31))
+* project health scan, agent output cache and specialist agents ([#12](https://github.com/arek-stk/ai-orchestrator/issues/12)) ([bf6375a](https://github.com/arek-stk/ai-orchestrator/commit/bf6375a69e7db9cb3aa8e5f95a8211ba683f496e))
+* **server:** add Prometheus metrics endpoint, request ids and log redaction ([c27270e](https://github.com/arek-stk/ai-orchestrator/commit/c27270e27c4386514c8bea36735cf21db478ff53))
+* **server:** enforce per-project access control on project_members ([3dbfc5d](https://github.com/arek-stk/ai-orchestrator/commit/3dbfc5de54666c4b976147c1177dd6512b893874))
+* **server:** expire stale approvals and block their runs ([11ec7a8](https://github.com/arek-stk/ai-orchestrator/commit/11ec7a837c06aa5b8e61f74e8af0527436b2c87e))
+* **server:** fan out events across instances with LISTEN/NOTIFY ([5add0cb](https://github.com/arek-stk/ai-orchestrator/commit/5add0cb5fdcdf5abe28855f141441a65b5d6de01))
+* **web:** operations dashboard for the orchestrator ([#11](https://github.com/arek-stk/ai-orchestrator/issues/11)) ([2a6dc2f](https://github.com/arek-stk/ai-orchestrator/commit/2a6dc2f5564fad802c04969151c4e4b360e85312))
+
+
+### Bug Fixes
+
+* **deps:** force patched esbuild for drizzle-kit's loader ([#13](https://github.com/arek-stk/ai-orchestrator/issues/13)) ([fc71f20](https://github.com/arek-stk/ai-orchestrator/commit/fc71f204c1b740813b9904ee93c7815a6de7d258))
+
 ## [0.2.0](https://github.com/arek-stk/ai-orchestrator/compare/v0.1.0...v0.2.0) (2026-09-14)
 
 
