@@ -441,6 +441,44 @@ function parsePep508(spec: string): Entry | null {
   return pkg('pypi', name, rest ? rest : null, `pypi:${normalized}`);
 }
 
+/** Option line of a requirements file: `-r file`, `-rfile`, `--requirement file` or `--requirement=file`. */
+function requirementOption(line: string): { flag: string; value: string } {
+  const [first = '', ...rest] = splitWs(line);
+  if (first.startsWith('--')) {
+    const eq = first.indexOf('=');
+    return eq === -1 ? { flag: first, value: rest.join(' ') } : { flag: first.slice(0, eq), value: [first.slice(eq + 1), ...rest].join(' ') };
+  }
+  return first.length > 2 ? { flag: first.slice(0, 2), value: [first.slice(2), ...rest].join(' ') } : { flag: first, value: rest.join(' ') };
+}
+
+/** Repository paths of the files a requirements file includes with `-r` (relative to the including file). */
+function requirementIncludes(path: string, text: string): string[] {
+  const targets: string[] = [];
+  const dir = dirname(normalizePath(path));
+  for (const raw of splitLines(text)) {
+    const line = stripHashComment(raw).trim();
+    if (!line.startsWith('-')) continue;
+    const { flag, value } = requirementOption(line);
+    if ((flag !== '-r' && flag !== '--requirement') || !value || value.includes('://') || value.startsWith('/')) continue;
+    const target = normalizePath(dir ? `${dir}/${value}` : value);
+    if (target) targets.push(target);
+  }
+  return targets;
+}
+
+/** Forward slashes, no `.` or `..` segments; empty when the path leaves the repository. */
+function normalizePath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.replace(/\\/g, '/').split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) return '';
+      parts.pop();
+    } else parts.push(part);
+  }
+  return parts.join('/');
+}
+
 function parseRequirementsTxt(text: string): Entry[] {
   const entries: Entry[] = [];
   const lines = splitLines(text);
@@ -450,8 +488,7 @@ function parseRequirementsTxt(text: string): Entry[] {
     line = stripHashComment(line).trim();
     if (!line) continue;
     if (line.startsWith('-')) {
-      const [flag = '', ...values] = splitWs(line.replace('=', ' '));
-      const value = values.join(' ');
+      const { flag, value } = requirementOption(line);
       if (flag === '-i' || flag === '--index-url' || flag === '--extra-index-url' || flag === '-f' || flag === '--find-links') {
         entries.push(pkg('pypi', `package index ${clean(value, 180)}`, null, `pypi:index:${value}`, { reason: 'Adds a package index or download location' }));
       } else if (flag === '-e' || flag === '--editable') {
@@ -459,6 +496,9 @@ function parseRequirementsTxt(text: string): Entry[] {
         const egg = value.indexOf('#egg=');
         const name = egg === -1 ? clean(value, 200) : clean(value.slice(egg + 5), 200);
         entries.push(pkg('pypi', name, null, `pypi:editable:${value}`, { reason: 'Editable install from a VCS or URL' }));
+      } else if (flag === '-r' || flag === '--requirement') {
+        // The included file's packages are inspected when it is part of the same change set.
+        entries.push(pkg('pypi', `requirements file ${clean(value, 180)}`, null, `pypi:include:${value}`, { uncertain: true, reason: 'Includes another requirements file; review the packages it lists' }));
       }
       continue;
     }
@@ -481,7 +521,33 @@ function parsePackageJson(text: string): Entry[] | null {
       if (entry) entries.push(entry);
     }
   }
+  // Overrides and resolutions can swap any installed package for another one or for a URL/Git source.
+  const pnpmConfig = isRecord(json.pnpm) ? json.pnpm : {};
+  for (const [field, overrides] of [
+    ['overrides', json.overrides],
+    ['resolutions', json.resolutions],
+    ['pnpm.overrides', pnpmConfig.overrides],
+  ] as const) {
+    if (!isRecord(overrides)) continue;
+    const stack: Record<string, unknown>[] = [overrides];
+    while (stack.length > 0) {
+      for (const [name, value] of Object.entries(stack.pop()!)) {
+        if (isRecord(value)) {
+          stack.push(value);
+          continue;
+        }
+        if (typeof value !== 'string' || !isSourceSwapSpec(value.trim())) continue;
+        const entry = npmEntry(name, value);
+        if (entry) entries.push({ ...entry, detail: `${field} ${clean(name, 100)}`, reason: entry.reason ?? 'Override replaces an installed package with a different package' });
+      }
+    }
+  }
   return entries;
+}
+
+/** A spec that installs something other than a registry version of the named package. */
+function isSourceSwapSpec(spec: string): boolean {
+  return spec.startsWith('npm:') || spec.includes('://') || spec.startsWith('github:') || spec.startsWith('git+') || spec.startsWith('gitlab:') || spec.startsWith('bitbucket:') || isGitHubShorthand(spec);
 }
 
 function npmEntry(name: string, spec: string | null): Entry | null {
@@ -507,35 +573,94 @@ function isGitHubShorthand(spec: string): boolean {
   return slash > 0 && !spec.startsWith('@') && !spec.includes(' ') && isAlnum(spec[0]);
 }
 
+const NPM_DEFAULT_REGISTRIES = ['https://registry.npmjs.org/', 'https://registry.yarnpkg.com/'];
+const LOCAL_SPEC_PREFIXES = ['workspace:', 'file:', 'link:', 'portal:'];
+
+/**
+ * One installed package of an npm lockfile. The identity carries the download origin unless it is the default
+ * registry, so a package swapped to another registry, a tarball URL or a Git repository counts as a new dependency.
+ */
+function npmLockEntry(name: string, version: unknown, resolved: unknown): Entry | null {
+  let realName = name;
+  let spec = typeof version === 'string' ? version.trim() : null;
+  if (spec && LOCAL_SPEC_PREFIXES.some((prefix) => spec!.startsWith(prefix))) return null;
+  if (spec?.startsWith('npm:')) {
+    const target = spec.slice(4);
+    const at = target.lastIndexOf('@');
+    realName = at > 0 ? target.slice(0, at) : target;
+    spec = at > 0 ? target.slice(at + 1) : null;
+  }
+  const origin = typeof resolved === 'string' ? resolved.trim() : spec && (spec.includes('://') || spec.startsWith('git') || spec.startsWith('github:')) ? spec : '';
+  const detail = realName !== name ? { detail: `alias ${clean(name, 100)}` } : {};
+  if (!origin || NPM_DEFAULT_REGISTRIES.some((registry) => origin.startsWith(registry))) {
+    return pkg('npm', realName, spec, `npm:${realName.toLowerCase()}`, detail);
+  }
+  if (LOCAL_SPEC_PREFIXES.some((prefix) => origin.startsWith(prefix))) return null;
+  if (origin.startsWith('https://') || origin.startsWith('http://')) {
+    let host = origin;
+    try {
+      host = new URL(origin).host.toLowerCase();
+    } catch {
+      // keep the raw URL as identity
+    }
+    return pkg('npm', realName, spec, `npm:${realName.toLowerCase()}@${host}`, { detail: `resolved from ${clean(host, 150)}`, reason: 'Downloaded from a registry or URL other than registry.npmjs.org' });
+  }
+  const hash = origin.indexOf('#');
+  const source = hash === -1 ? origin : origin.slice(0, hash);
+  return pkg('npm', realName, clean(spec ?? origin, 200), `npm:${realName.toLowerCase()}@${source}`, { ...detail, reason: 'Installed from a URL or Git repository instead of the registry' });
+}
+
+/** package-lock.json / npm-shrinkwrap.json, lockfile v1, v2 and v3: every installed package, not only direct ones. */
 function parseNpmLock(text: string): Entry[] | null {
   const json = parseJsonLoose(text);
   if (!isRecord(json)) return null;
   const entries: Entry[] = [];
+  let recognised = false;
   if (isRecord(json.packages)) {
-    // v2/v3: entries without node_modules in the key are the root and workspaces; their dependency maps are the
-    // top-level (direct) dependencies.
+    // v2/v3: keys without node_modules are the root and workspace folders (their maps are the direct dependencies);
+    // every `…node_modules/<name>` key is an installed package, hoisted or nested.
+    recognised = true;
     for (const [key, value] of Object.entries(json.packages)) {
-      if (key.includes('node_modules') || !isRecord(value)) continue;
-      for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-        const deps = value[section];
-        if (!isRecord(deps)) continue;
-        for (const [name, spec] of Object.entries(deps)) {
-          const entry = npmEntry(name, typeof spec === 'string' ? spec : null);
-          if (entry) entries.push(entry);
+      if (!isRecord(value)) continue;
+      const at = key.lastIndexOf('node_modules/');
+      if (at === -1) {
+        for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+          const deps = value[section];
+          if (!isRecord(deps)) continue;
+          for (const [name, spec] of Object.entries(deps)) {
+            const entry = npmEntry(name, typeof spec === 'string' ? spec : null);
+            if (entry) entries.push(entry);
+          }
         }
+        continue;
       }
+      if (value.link === true) continue; // symlink to a workspace folder, whose own entry is read above
+      const entry = npmLockEntry(typeof value.name === 'string' ? value.name : key.slice(at + 'node_modules/'.length), value.version, value.resolved);
+      if (entry) entries.push(entry);
     }
-    return entries;
   }
   if (isRecord(json.dependencies)) {
-    for (const [name, value] of Object.entries(json.dependencies)) {
-      entries.push(pkg('npm', name, isRecord(value) && typeof value.version === 'string' ? value.version : null, `npm:${name.toLowerCase()}`));
+    // v1, and the legacy section v2 keeps for npm 6: nested `dependencies` trees, walked without recursion.
+    recognised = true;
+    const stack: Record<string, unknown>[] = [json.dependencies];
+    while (stack.length > 0) {
+      for (const [name, value] of Object.entries(stack.pop()!)) {
+        const entry = isRecord(value) ? npmLockEntry(name, value.version, value.resolved) : pkg('npm', name, null, `npm:${name.toLowerCase()}`);
+        if (entry) entries.push(entry);
+        if (isRecord(value) && isRecord(value.dependencies)) stack.push(value.dependencies);
+      }
     }
-    return entries;
   }
-  return json.lockfileVersion === undefined ? null : entries;
+  return recognised || json.lockfileVersion !== undefined ? entries : null;
 }
 
+/** Splits an npm descriptor `name@range` (scoped names keep their leading `@`). */
+function splitDescriptor(descriptor: string): { name: string; range: string | null } {
+  const at = descriptor.indexOf('@', 1);
+  return at === -1 ? { name: descriptor, range: null } : { name: descriptor.slice(0, at), range: descriptor.slice(at + 1) };
+}
+
+/** bun.lock: direct dependencies of every workspace and every installed package. */
 function parseBunLock(text: string): Entry[] | null {
   const json = parseJsonLoose(text);
   if (!isRecord(json) || !isRecord(json.workspaces)) return null;
@@ -551,6 +676,18 @@ function parseBunLock(text: string): Entry[] | null {
       }
     }
   }
+  if (isRecord(json.packages)) {
+    for (const [key, value] of Object.entries(json.packages)) {
+      const descriptor = Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null;
+      if (!descriptor) {
+        entries.push(pkg('npm', key, null, `npm:raw:${key}`, { uncertain: true, reason: 'Lockfile package entry could not be parsed' }));
+        continue;
+      }
+      const { name, range } = splitDescriptor(descriptor);
+      const entry = npmEntry(name, range);
+      if (entry) entries.push(entry);
+    }
+  }
   return entries;
 }
 
@@ -560,11 +697,26 @@ function yamlKey(trimmed: string): string | null {
   return unquote(trimmed.slice(0, colon));
 }
 
-/** pnpm-lock.yaml: direct dependencies of every importer (or of the root for old lockfiles). */
+/** Package name of a pnpm `packages:`/`snapshots:` key: `name@1.0.0(peer@2)` (v6+) or `/name/1.0.0_peer@2` (v5). */
+function pnpmPackageName(key: string): string | null {
+  let k = key.startsWith('/') ? key.slice(1) : key;
+  const paren = k.indexOf('(');
+  if (paren !== -1) k = k.slice(0, paren);
+  if (!k || k.startsWith('file:') || k.startsWith('link:')) return null;
+  const start = k.startsWith('@') ? k.indexOf('/') + 1 : 0;
+  if (start === 0 && k.startsWith('@')) return k;
+  for (let i = start; i < k.length; i++) {
+    if (k[i] === '@' || k[i] === '/') return k.slice(0, i);
+  }
+  return k;
+}
+
+/** pnpm-lock.yaml: direct dependencies of every importer (or of the root for old lockfiles) and every package. */
 function parsePnpmLock(text: string): Entry[] | null {
   if (!text.includes('lockfileVersion')) return null;
   const entries: Entry[] = [];
   let inImporters = false;
+  let inPackages = false;
   let hasImporters = false;
   let sectionIndent = -1;
   for (const line of splitLines(text)) {
@@ -573,8 +725,15 @@ function parsePnpmLock(text: string): Entry[] | null {
     const indent = leadingSpaces(line);
     if (indent === 0) {
       inImporters = trimmed === 'importers:';
+      inPackages = trimmed === 'packages:' || trimmed === 'snapshots:';
       hasImporters ||= inImporters;
       sectionIndent = !hasImporters && isDependencySection(yamlKey(trimmed)) ? 0 : -1;
+      continue;
+    }
+    if (inPackages) {
+      const key = indent === 2 ? yamlKey(trimmed) : null;
+      const name = key ? pnpmPackageName(key) : null;
+      if (name) entries.push(pkg('npm', name, null, `npm:${name.toLowerCase()}`));
       continue;
     }
     if (sectionIndent >= 0 && indent <= sectionIndent) sectionIndent = -1;
@@ -594,7 +753,10 @@ function isDependencySection(key: string | null): boolean {
   return key === 'dependencies' || key === 'devDependencies' || key === 'optionalDependencies';
 }
 
-/** yarn.lock (classic and berry): every resolved package. Flat, so only compared without a manifest change. */
+/**
+ * yarn.lock (classic and berry): every resolved package, transitive ones included. Aliases count as the aliased
+ * package and URL or Git ranges carry their source in the identity; workspace and local ranges are skipped.
+ */
 function parseYarnLock(text: string): Entry[] {
   const entries: Entry[] = [];
   for (const line of splitLines(text)) {
@@ -603,9 +765,13 @@ function parseYarnLock(text: string): Entry[] {
     for (const descriptor of header.split(',')) {
       const d = unquote(descriptor);
       if (!d || d === '__metadata') continue;
-      const at = d.indexOf('@', 1);
-      const name = at === -1 ? d : d.slice(0, at);
-      entries.push(pkg('npm', name, null, `npm:${name.toLowerCase()}`));
+      const { name, range } = splitDescriptor(d);
+      let spec = range;
+      // Berry writes registry ranges as `npm:^1.0.0`; only `npm:other@range` is an alias.
+      if (spec?.startsWith('npm:') && spec.indexOf('@', 5) === -1) spec = spec.slice(4);
+      if (spec?.startsWith('patch:')) spec = null;
+      const entry = npmEntry(name, spec);
+      if (entry) entries.push(entry);
     }
   }
   return entries;
@@ -662,10 +828,17 @@ function parseCargoToml(text: string): Entry[] {
   const subtables = new Map<number, { name: string; fields: Map<string, string> }>();
   for (const e of readToml(text)) {
     const last = e.table[e.table.length - 1];
-    if (last && CARGO_SECTIONS.has(last)) {
+    // `[patch.<registry>]` and `[replace]` swap the source of an existing crate, e.g. to a Git fork.
+    const isPatchTable = (e.table.length === 2 && e.table[0] === 'patch') || (e.table.length === 1 && e.table[0] === 'replace');
+    if ((last && CARGO_SECTIONS.has(last)) || isPatchTable) {
       if (e.key.length === 2 && e.key[1] === 'workspace') continue; // `serde.workspace = true` inherits a root entry
-      const entry = cargoEntry(e.key[0]!, tomlStringValue(e.value), tomlInlineTable(e.value));
-      if (entry) entries.push(entry);
+      const name = isPatchTable && e.table[0] === 'replace' ? e.key.join('.').split(':')[0]! : e.key[0]!;
+      const entry = cargoEntry(name, tomlStringValue(e.value), tomlInlineTable(e.value));
+      if (entry) entries.push(isPatchTable ? { ...entry, detail: `${e.table.join('.')} source override` } : entry);
+    } else if (e.table.length === 3 && e.table[0] === 'patch') {
+      const item = subtables.get(e.tableIndex) ?? { name: e.table[2]!, fields: new Map<string, string>() };
+      item.fields.set(e.key.join('.'), e.value);
+      subtables.set(e.tableIndex, item);
     } else if (e.table.length >= 2 && CARGO_SECTIONS.has(e.table[e.table.length - 2]!)) {
       const item = subtables.get(e.tableIndex) ?? { name: e.table[e.table.length - 1]!, fields: new Map<string, string>() };
       item.fields.set(e.key.join('.'), e.value);
@@ -715,20 +888,31 @@ function parseGradleCatalog(text: string): Entry[] {
 
 /** Cargo.lock, poetry.lock, uv.lock, pdm.lock: `[[package]]` items. Registry packages only for Cargo. */
 function parseTomlLock(text: string, ecosystem: 'cargo' | 'pypi'): Entry[] {
-  const items = new Map<number, { name?: string; version?: string; source: boolean }>();
+  const items = new Map<number, { name?: string; version?: string; source: string | null }>();
   for (const e of readToml(text)) {
     if (e.table.join('.') !== 'package' || e.key.length !== 1) continue;
-    const item = items.get(e.tableIndex) ?? { source: false };
+    const item = items.get(e.tableIndex) ?? { source: null };
     if (e.key[0] === 'name') item.name = tomlStringValue(e.value) ?? undefined;
     if (e.key[0] === 'version') item.version = tomlStringValue(e.value) ?? undefined;
-    if (e.key[0] === 'source') item.source = true;
+    if (e.key[0] === 'source') item.source = tomlStringValue(e.value) ?? e.value;
     items.set(e.tableIndex, item);
   }
   const entries: Entry[] = [];
   for (const item of items.values()) {
-    if (!item.name || (ecosystem === 'cargo' && !item.source)) continue;
-    const key = ecosystem === 'cargo' ? `cargo:${item.name.toLowerCase()}` : `pypi:${normalizePypiName(item.name)}`;
-    entries.push(pkg(ecosystem, item.name, item.version ?? null, key));
+    if (!item.name) continue;
+    if (ecosystem === 'pypi') {
+      entries.push(pkg(ecosystem, item.name, item.version ?? null, `pypi:${normalizePypiName(item.name)}`));
+      continue;
+    }
+    if (item.source === null) continue; // workspace member or path dependency
+    const hash = item.source.indexOf('#');
+    const source = hash === -1 ? item.source : item.source.slice(0, hash);
+    const cratesIo = source === 'registry+https://github.com/rust-lang/crates.io-index' || source === 'sparse+https://index.crates.io/';
+    entries.push(
+      cratesIo
+        ? pkg('cargo', item.name, item.version ?? null, `cargo:${item.name.toLowerCase()}`)
+        : pkg('cargo', item.name, item.version ?? null, `cargo:${item.name.toLowerCase()}@${source}`, { detail: `source ${clean(source, 150)}`, reason: 'From a Git repository or a registry other than crates.io' }),
+    );
   }
   return entries;
 }
@@ -824,14 +1008,41 @@ function parseGemfile(text: string): Entry[] {
   return entries;
 }
 
+/** Gemfile.lock: DEPENDENCIES (direct) and the specs of GEM and GIT sources (every installed gem). */
 function parseGemfileLock(text: string): Entry[] | null {
   const entries: Entry[] = [];
   let inDependencies = false;
   let seen = false;
+  let source: 'GEM' | 'GIT' | null = null;
+  let remote = '';
+  let inSpecs = false;
   for (const line of splitLines(text)) {
     if (line && line[0] !== ' ') {
-      inDependencies = line.trim() === 'DEPENDENCIES';
+      const header = line.trim();
+      inDependencies = header === 'DEPENDENCIES';
       seen ||= inDependencies;
+      source = header === 'GEM' || header === 'GIT' ? header : null;
+      remote = '';
+      inSpecs = false;
+      continue;
+    }
+    if (source) {
+      const indent = leadingSpaces(line);
+      const trimmed = line.trim();
+      if (indent === 2) {
+        if (trimmed.startsWith('remote:')) remote = trimmed.slice(7).trim();
+        inSpecs = trimmed === 'specs:';
+      } else if (indent === 4 && inSpecs && trimmed) {
+        const open = trimmed.indexOf(' (');
+        const name = open === -1 ? trimmed : trimmed.slice(0, open);
+        const version = open !== -1 && trimmed.endsWith(')') ? trimmed.slice(open + 2, -1) : null;
+        const defaultSource = source === 'GEM' && (remote === '' || remote === 'https://rubygems.org/' || remote === 'https://rubygems.org');
+        entries.push(
+          defaultSource
+            ? pkg('rubygems', name, version, `rubygems:${name.toLowerCase()}`)
+            : pkg('rubygems', name, version, `rubygems:${name.toLowerCase()}@${remote}`, { detail: `source ${clean(remote, 150)}`, reason: 'From a Git repository or a gem source other than rubygems.org' }),
+        );
+      }
       continue;
     }
     if (!inDependencies || leadingSpaces(line) !== 2) continue;
@@ -1054,8 +1265,10 @@ function parseNugetLock(text: string): Entry[] | null {
   for (const framework of Object.values(json.dependencies)) {
     if (!isRecord(framework)) continue;
     for (const [name, value] of Object.entries(framework)) {
-      if (isRecord(value) && value.type === 'Direct') {
-        entries.push(pkg('nuget', name, typeof value.requested === 'string' ? value.requested : null, `nuget:${name.toLowerCase()}`));
+      // Direct, Transitive and CentralTransitive packages are all restored; Project entries are local projects.
+      if (isRecord(value) && value.type !== 'Project') {
+        const version = typeof value.requested === 'string' ? value.requested : typeof value.resolved === 'string' ? value.resolved : null;
+        entries.push(pkg('nuget', name, version, `nuget:${name.toLowerCase()}`));
       }
     }
   }
@@ -1231,16 +1444,14 @@ interface FileSpec {
   ecosystem: DependencyEcosystem;
   kind: DependencyKind;
   parse: (text: string) => Entry[] | null;
-  /**
-   * Lockfiles that list every resolved package (not just direct dependencies) are only compared when no manifest of
-   * the ecosystem changed in the same directory tree; otherwise transitive packages of a legitimate change would be
-   * reported. The manifest basenames that pair with the lockfile.
-   */
-  flatWith?: readonly string[];
+  /** Binary lockfile that cannot be inspected: every change is reported as a possible addition. */
+  opaque?: boolean;
 }
 
 const PACKAGE_MANIFEST: Pick<FileSpec, 'source' | 'kind'> = { source: 'manifest', kind: 'package' };
 const LOCKFILE: Pick<FileSpec, 'source' | 'kind'> = { source: 'lockfile', kind: 'package' };
+/** Applied to files a changed requirements file includes with `-r`, whatever their name. */
+const REQUIREMENTS_SPEC: FileSpec = { ...PACKAGE_MANIFEST, ecosystem: 'pypi', parse: parseRequirementsTxt };
 
 export function classifyDependencyFile(path: string): FileSpec | null {
   const normalized = path.replace(/\\/g, '/');
@@ -1258,27 +1469,27 @@ export function classifyDependencyFile(path: string): FileSpec | null {
     case 'bun.lock':
       return { ...LOCKFILE, ecosystem: 'npm', parse: parseBunLock };
     case 'bun.lockb':
-      return { ...LOCKFILE, ecosystem: 'npm', parse: () => null, flatWith: ['package.json'] };
+      return { ...LOCKFILE, ecosystem: 'npm', parse: () => null, opaque: true };
     case 'yarn.lock':
-      return { ...LOCKFILE, ecosystem: 'npm', parse: parseYarnLock, flatWith: ['package.json'] };
+      return { ...LOCKFILE, ecosystem: 'npm', parse: parseYarnLock };
     case 'pyproject.toml':
       return { ...PACKAGE_MANIFEST, ecosystem: 'pypi', parse: parsePyproject };
     case 'pipfile':
       return { ...PACKAGE_MANIFEST, ecosystem: 'pypi', parse: parsePipfile };
     case 'pipfile.lock':
-      return { ...LOCKFILE, ecosystem: 'pypi', parse: parsePipfileLock, flatWith: ['pipfile'] };
+      return { ...LOCKFILE, ecosystem: 'pypi', parse: parsePipfileLock };
     case 'poetry.lock':
     case 'uv.lock':
     case 'pdm.lock':
-      return { ...LOCKFILE, ecosystem: 'pypi', parse: (t) => parseTomlLock(t, 'pypi'), flatWith: ['pyproject.toml'] };
+      return { ...LOCKFILE, ecosystem: 'pypi', parse: (t) => parseTomlLock(t, 'pypi') };
     case 'cargo.toml':
       return { ...PACKAGE_MANIFEST, ecosystem: 'cargo', parse: parseCargoToml };
     case 'cargo.lock':
-      return { ...LOCKFILE, ecosystem: 'cargo', parse: (t) => parseTomlLock(t, 'cargo'), flatWith: ['cargo.toml'] };
+      return { ...LOCKFILE, ecosystem: 'cargo', parse: (t) => parseTomlLock(t, 'cargo') };
     case 'go.mod':
       return { ...PACKAGE_MANIFEST, ecosystem: 'go', parse: parseGoMod };
     case 'go.sum':
-      return { ...LOCKFILE, ecosystem: 'go', parse: parseGoSum, flatWith: ['go.mod'] };
+      return { ...LOCKFILE, ecosystem: 'go', parse: parseGoSum };
     case 'gemfile':
       return { ...PACKAGE_MANIFEST, ecosystem: 'rubygems', parse: parseGemfile };
     case 'gemfile.lock':
@@ -1286,7 +1497,7 @@ export function classifyDependencyFile(path: string): FileSpec | null {
     case 'composer.json':
       return { ...PACKAGE_MANIFEST, ecosystem: 'packagist', parse: parseComposerJson };
     case 'composer.lock':
-      return { ...LOCKFILE, ecosystem: 'packagist', parse: parseComposerLock, flatWith: ['composer.json'] };
+      return { ...LOCKFILE, ecosystem: 'packagist', parse: parseComposerLock };
     case 'packages.config':
     case 'directory.packages.props':
     case 'directory.build.props':
@@ -1302,7 +1513,7 @@ export function classifyDependencyFile(path: string): FileSpec | null {
     case 'settings.gradle.kts':
       return { ...PACKAGE_MANIFEST, ecosystem: 'maven', parse: parseGradle };
     case 'gradle.lockfile':
-      return { ...LOCKFILE, ecosystem: 'maven', parse: parseGradleLockfile, flatWith: ['build.gradle', 'build.gradle.kts'] };
+      return { ...LOCKFILE, ecosystem: 'maven', parse: parseGradleLockfile };
     case 'extensions.json':
       return dir === '.vscode' || dir.endsWith('/.vscode') ? { source: 'config', kind: 'vscode_extension', ecosystem: 'vscode', parse: (t) => parseVscodeRecommendations(t, false) } : null;
     case '.mcp.json':
@@ -1427,26 +1638,60 @@ function possibleAddition(spec: FileSpec, file: string, reason: string): Depende
   return toFinding({ kind: spec.kind, ecosystem: spec.ecosystem, name: `unparsed change in ${basename(file)}`, version: null, key: '', uncertain: true, reason }, file, spec.source);
 }
 
+/** Reasons that mark lockfile findings, so a reviewer can tell them apart from declared additions (ADR-031). */
+export const LOCKFILE_FINDING_REASONS = {
+  /** No manifest of the ecosystem changed in the lockfile's tree: the lockfile alone brings the package in. */
+  undeclared: 'Added to the lockfile without a matching manifest entry',
+  /** A manifest changed too: usually a transitive package of a declared addition or bump, but still gated. */
+  possiblyTransitive: 'Lockfile addition not declared in manifest (possibly transitive)',
+  /** Binary or unparsable lockfile. */
+  opaque:
+    'Possible addition, cannot inspect: the lockfile changed but could not be parsed (binary or malformed). Bumping an existing dependency also changes it, so any change to this file is reported.',
+} as const;
+
 /**
  * Additions in one file: entries of the new content whose identity is not in the base content. Version changes
  * keep the identity (not reported), removals are ignored. Unparsable new content is a possible addition.
  */
 export function diffDependencyFile(path: string, base: string | null, next: string | null): DependencyFinding[] {
   const spec = classifyDependencyFile(path);
-  if (!spec || next === null) return [];
-  if (base !== null && base === next) return [];
-  if (next.length > MAX_PARSED_FILE_CHARS) return [possibleAddition(spec, path, `File is larger than ${MAX_PARSED_FILE_CHARS} characters and was not parsed; treated as a possible addition.`)];
+  return spec ? diffWithSpec(spec, path, base, next) : [];
+}
 
-  const nextEntries = spec.parse(next);
-  if (nextEntries === null) return [possibleAddition(spec, path, 'File could not be parsed; treated as a possible addition.')];
+function diffWithSpec(spec: FileSpec, path: string, base: string | null, next: string | null): DependencyFinding[] {
+  if (next === null) return [];
+  if (base !== null && base === next) return [];
+  const lockfile = spec.source === 'lockfile';
+  if (next.length > MAX_PARSED_FILE_CHARS) {
+    return [possibleAddition(spec, path, `File is larger than ${MAX_PARSED_FILE_CHARS} characters and was not parsed; treated as a possible addition.${lockfile ? ' Bumping an existing dependency also changes it.' : ''}`)];
+  }
+
+  const nextEntries = spec.opaque ? null : spec.parse(next);
+  if (nextEntries === null) return [possibleAddition(spec, path, lockfile ? LOCKFILE_FINDING_REASONS.opaque : 'File could not be parsed; treated as a possible addition.')];
   const baseEntries = base !== null && base.length <= MAX_PARSED_FILE_CHARS ? (spec.parse(base) ?? []) : [];
   const known = new Set(baseEntries.map((e) => e.key));
   const seen = new Set<string>();
   const findings: DependencyFinding[] = [];
+  // Lockfiles list a package several times (direct map, installed entry, nested copies): one finding per package,
+  // unless two entries bring it from different non-registry sources.
+  const byIdentity = new Map<string, number>();
   for (const entry of nextEntries) {
     if (known.has(entry.key) || seen.has(entry.key)) continue;
     seen.add(entry.key);
-    findings.push(toFinding(entry, path, spec.source));
+    const finding = toFinding(entry, path, spec.source);
+    if (lockfile && !finding.uncertain) {
+      const id = identity(finding);
+      const index = byIdentity.get(id);
+      if (index !== undefined) {
+        const existing = findings[index]!;
+        if (!finding.reason) continue;
+        if (!existing.reason) {
+          findings[index] = finding;
+          continue;
+        }
+      } else byIdentity.set(id, findings.length);
+    }
+    findings.push(finding);
   }
   return findings;
 }
@@ -1455,46 +1700,81 @@ function identity(f: Pick<DependencyFinding, 'ecosystem' | 'name'>): string {
   return f.ecosystem === 'pypi' ? `pypi:${normalizePypiName(f.name)}` : `${f.ecosystem}:${f.name.toLowerCase()}`;
 }
 
+/** Declared additions (manifests, configs) first, then lockfile findings; within each group by file and name. */
 export function sortFindings(findings: readonly DependencyFinding[]): DependencyFinding[] {
-  const key = (f: DependencyFinding) => [f.file, f.kind, f.ecosystem, f.name, f.version ?? ''].join(' ');
+  const key = (f: DependencyFinding) => [f.source === 'lockfile' ? '1' : '0', f.file, f.kind, f.ecosystem, f.name, f.version ?? ''].join(' ');
   return [...findings].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
 
-/** Stable fingerprint of a set of findings; an approval covers exactly this set. */
+/** Stable fingerprint of a set of findings, labels included; an approval covers exactly this set as it was shown. */
 export function dependencyFingerprint(findings: readonly DependencyFinding[]): string | null {
   if (findings.length === 0) return null;
-  const canonical = sortFindings(findings).map((f) => [f.kind, f.ecosystem, f.name, f.version ?? '', f.file, f.uncertain ? '1' : '0']);
+  const canonical = sortFindings(findings).map((f) => [f.kind, f.ecosystem, f.name, f.version ?? '', f.file, f.uncertain ? '1' : '0', f.source, f.reason ?? '']);
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 40);
 }
 
 /**
  * Detects new dependencies in a change set. `readBase` returns the file content before the change (null when the
  * file did not exist). Deleted files are ignored.
+ *
+ * Every changed lockfile is parsed and diffed, also when its manifest changed in the same change set. A lockfile
+ * entry is dropped only when a manifest addition of the same package in this change set already covers it and the
+ * lockfile does not install it from another source; every other new lockfile entry is reported and labelled (see
+ * LOCKFILE_FINDING_REASONS).
  */
 export async function detectDependencyAdditions(changes: readonly ChangedFileLike[], readBase: ReadBaseContent): Promise<DependencyDetection> {
-  const manifests: DependencyFinding[] = [];
-  const lockfiles: DependencyFinding[] = [];
-  const changedManifests = changes.filter((c) => classifyDependencyFile(c.path)?.source === 'manifest').map((c) => c.path.replace(/\\/g, '/').toLowerCase());
-
-  for (const change of changes) {
-    if (change.action === 'delete') continue;
+  const live = changes.filter((c) => c.action !== 'delete');
+  const specs = new Map<ChangedFileLike, FileSpec>();
+  for (const change of live) {
     const spec = classifyDependencyFile(change.path);
-    if (!spec) continue;
-    if (spec.flatWith) {
-      const dir = dirname(change.path.replace(/\\/g, '/').toLowerCase());
-      const paired = changedManifests.some((m) => spec.flatWith!.includes(basename(m)) && (dir === '' || m === `${dir}/${basename(m)}` || m.startsWith(`${dir}/`)));
-      if (paired) continue;
+    if (spec) specs.set(change, spec);
+  }
+  // Files included with `-r` by a changed requirements file are requirements files under any name.
+  const byPath = new Map(live.map((c) => [normalizePath(c.path), c]));
+  const pending = live.filter((c) => specs.get(c)?.parse === parseRequirementsTxt);
+  while (pending.length > 0) {
+    const change = pending.pop()!;
+    for (const target of requirementIncludes(change.path, change.content ?? '')) {
+      const included = byPath.get(target);
+      if (included && !specs.has(included)) {
+        specs.set(included, REQUIREMENTS_SPEC);
+        pending.push(included);
+      }
     }
-    const base = await readBase(change.path);
-    const found = diffDependencyFile(change.path, base, change.content ?? '');
-    const labelled = spec.source === 'lockfile' ? found.map((f) => (f.reason ? f : { ...f, reason: 'Added to the lockfile without a matching manifest entry' })) : found;
-    (spec.source === 'lockfile' ? lockfiles : manifests).push(...labelled);
   }
 
-  const declared = new Set(manifests.map(identity));
-  const findings = sortFindings([...manifests, ...lockfiles.filter((f) => f.uncertain || !declared.has(identity(f)))]);
+  // Deleted manifests count as changed: removing a dependency rewrites the lockfile as well.
+  const changedManifests: Array<{ path: string; ecosystem: DependencyEcosystem }> = [];
+  for (const change of changes) {
+    const spec = specs.get(change) ?? classifyDependencyFile(change.path);
+    if (spec?.source === 'manifest') changedManifests.push({ path: normalizePath(change.path).toLowerCase(), ecosystem: spec.ecosystem });
+  }
+
+  const manifests: DependencyFinding[] = [];
+  const lockfiles: Array<{ finding: DependencyFinding; ownSource: boolean }> = [];
+  for (const change of live) {
+    const spec = specs.get(change);
+    if (!spec) continue;
+    const found = diffWithSpec(spec, change.path, await readBase(change.path), change.content ?? '');
+    if (spec.source !== 'lockfile') {
+      manifests.push(...found);
+      continue;
+    }
+    const dir = dirname(normalizePath(change.path).toLowerCase());
+    const manifestChanged = changedManifests.some((m) => m.ecosystem === spec.ecosystem && (dir === '' || m.path.startsWith(`${dir}/`)));
+    const label = manifestChanged ? LOCKFILE_FINDING_REASONS.possiblyTransitive : LOCKFILE_FINDING_REASONS.undeclared;
+    for (const finding of found) {
+      if (finding.uncertain) lockfiles.push({ finding, ownSource: true });
+      else lockfiles.push({ finding: { ...finding, reason: finding.reason ? `${label}. ${finding.reason}` : label }, ownSource: finding.reason !== null });
+    }
+  }
+
+  const declared = new Set(manifests.filter((f) => !f.uncertain).map(identity));
+  const kept = lockfiles.filter(({ finding, ownSource }) => ownSource || !declared.has(identity(finding))).map(({ finding }) => finding);
+  const findings = sortFindings([...manifests, ...kept]);
   return { findings, fingerprint: dependencyFingerprint(findings) };
 }
+
 
 // ---------------------------------------------------------------------------
 // Approval payload and decision memory
@@ -1565,5 +1845,7 @@ export function describeDependencyFindings(findings: readonly DependencyFinding[
   const names = findings.slice(0, max).map((f) => `${f.name}${f.version ? `@${f.version}` : ''} (${f.ecosystem})`);
   const more = findings.length > max ? ` and ${findings.length - max} more` : '';
   const noun = findings.length === 1 ? 'dependency' : 'dependencies';
-  return `${findings.length} new ${noun} ${findings.length === 1 ? 'needs' : 'need'} human approval: ${names.join(', ')}${more}`;
+  const fromLockfiles = findings.filter((f) => f.source === 'lockfile').length;
+  const lockNote = fromLockfiles > 0 ? ` (${fromLockfiles} only in lockfiles)` : '';
+  return `${findings.length} new ${noun}${lockNote} ${findings.length === 1 ? 'needs' : 'need'} human approval: ${names.join(', ')}${more}`;
 }

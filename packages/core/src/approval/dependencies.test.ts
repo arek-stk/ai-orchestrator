@@ -6,6 +6,7 @@ import {
   dependencyFingerprint,
   detectDependencyAdditions,
   diffDependencyFile,
+  LOCKFILE_FINDING_REASONS,
   parseJsonLoose,
   readDependencyApprovalDetails,
   registryUrl,
@@ -96,25 +97,31 @@ describe('detectDependencyAdditions: lockfiles', () => {
     expect(result.findings[0]).toMatchObject({ name: 'left-pad', source: 'lockfile', reason: 'Added to the lockfile without a matching manifest entry' });
   });
 
-  it('does not report transitive lockfile packages or duplicates of manifest findings', async () => {
+  it('dedupes a lockfile entry against its manifest addition but labels and gates transitive packages', async () => {
     const result = await detect({ 'package.json': manifest, 'package-lock.json': lock({ express: '^4.18.0' }, ['express']) }, [
       { path: 'package.json', action: 'update', content: json({ dependencies: { express: '^4.18.0', zod: '^4.1.0' } }) },
       { path: 'package-lock.json', action: 'update', content: lock({ express: '^4.18.0', zod: '^4.1.0' }, ['express', 'zod', 'some-transitive']) },
     ]);
-    expect(result.findings.map((f) => [f.name, f.file])).toEqual([['zod', 'package.json']]);
+    expect(result.findings.map((f) => [f.name, f.file, f.source, f.reason])).toEqual([
+      ['zod', 'package.json', 'manifest', null],
+      ['some-transitive', 'package-lock.json', 'lockfile', LOCKFILE_FINDING_REASONS.possiblyTransitive],
+    ]);
   });
 
-  it('compares flat lockfiles only when the manifest did not change', async () => {
+  it('diffs flat lockfiles also when the manifest changed (review fix: no silent lockfile-only additions)', async () => {
     const yarnBase = '# yarn lockfile v1\n\nexpress@^4.18.0:\n  version "4.18.2"\n';
     const yarnNext = `${yarnBase}\n"left-pad@^1.3.0", left-pad@^1.0.0:\n  version "1.3.0"\n`;
     const lockOnly = await detect({ 'yarn.lock': yarnBase }, [{ path: 'yarn.lock', action: 'update', content: yarnNext }]);
-    expect(names(lockOnly.findings)).toEqual(['left-pad']);
+    expect(lockOnly.findings.map((f) => [f.name, f.reason])).toEqual([['left-pad', LOCKFILE_FINDING_REASONS.undeclared]]);
 
     const withBump = await detect({ 'yarn.lock': yarnBase, 'package.json': manifest }, [
       { path: 'package.json', action: 'update', content: json({ dependencies: { express: '^4.19.0' } }) },
       { path: 'yarn.lock', action: 'update', content: yarnNext },
     ]);
-    expect(withBump.findings).toEqual([]);
+    expect(withBump.findings.map((f) => [f.name, f.file, f.source, f.reason])).toEqual([['left-pad', 'yarn.lock', 'lockfile', LOCKFILE_FINDING_REASONS.possiblyTransitive]]);
+    expect(withBump.fingerprint).toMatch(/^[0-9a-f]{40}$/);
+    // The label is part of what the human approves.
+    expect(withBump.fingerprint).not.toBe(lockOnly.fingerprint);
   });
 
   it('reads pnpm importers, Cargo.lock registry packages, Gemfile.lock DEPENDENCIES and go.sum', async () => {
@@ -164,8 +171,10 @@ describe('detectDependencyAdditions: Python', () => {
       ['python_dateutil', '>=2.8'],
       ['my-pkg', 'https://example.com/my-pkg-1.0.tar.gz'],
       ['package index https://pypi.internal.example/simple', null],
+      ['requirements file other.txt', null],
       ['numpy', '>=1.26'],
     ]);
+    expect(findings[3]).toMatchObject({ uncertain: true, reason: expect.stringMatching(/Includes another requirements file/) });
     expect(findings[0]!.registryUrl).toBe('https://pypi.org/project/python-dateutil/');
   });
 
@@ -400,6 +409,264 @@ describe('detectDependencyAdditions: developer environment configs', () => {
   });
 });
 
+describe('lockfile additions next to a manifest change (review fix for PR #20)', () => {
+  interface EcosystemCase {
+    ecosystem: string;
+    manifest: [path: string, base: string, bump: string, addition: string];
+    lockfile: [path: string, base: string, smuggled: string, ownEntry: string];
+    smuggledName: string;
+    addedName: string;
+  }
+  const tomlLock = (...names: string[]) => names.map((n) => `[[package]]\nname = "${n}"\nversion = "1.0.0"\n`).join('\n');
+  const pyproject = (deps: string[]) => `[project]\nname = "app"\ndependencies = [${deps.map((d) => `"${d}"`).join(', ')}]\n`;
+  const cargoLock = (...names: string[]) => names.map((n) => `[[package]]\nname = "${n}"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`).join('\n');
+  const yarnLock = (...names: string[]) => `# yarn lockfile v1\n\n${names.map((n) => `${n}@^1.0.0:\n  version "1.0.0"\n`).join('\n')}`;
+  const pkgJson = (deps: Record<string, string>) => json({ dependencies: deps });
+  const pipfileLock = (...names: string[]) => json({ default: Object.fromEntries(names.map((n) => [n, { version: '==1.0.0' }])), develop: {} });
+  const composerLock = (...names: string[]) => json({ packages: names.map((name) => ({ name, version: 'v1.0.0' })) });
+  const gradle = (...coords: string[]) => `dependencies {\n${coords.map((c) => `    implementation("${c}")\n`).join('')}}\n`;
+
+  const cases: EcosystemCase[] = [
+    {
+      ecosystem: 'yarn',
+      manifest: ['package.json', pkgJson({ express: '^1.0.0' }), pkgJson({ express: '^1.1.0' }), pkgJson({ express: '^1.0.0', 'left-pad': '^1.0.0' })],
+      lockfile: ['yarn.lock', yarnLock('express'), yarnLock('express', 'evil-pkg'), yarnLock('express', 'left-pad')],
+      smuggledName: 'evil-pkg',
+      addedName: 'left-pad',
+    },
+    {
+      ecosystem: 'Pipfile',
+      manifest: ['Pipfile', '[packages]\nrequests = "*"\n', '[packages]\nrequests = "==2.32"\n', '[packages]\nrequests = "*"\nblack = "*"\n'],
+      lockfile: ['Pipfile.lock', pipfileLock('requests'), pipfileLock('requests', 'evil-pkg'), pipfileLock('requests', 'black')],
+      smuggledName: 'evil-pkg',
+      addedName: 'black',
+    },
+    ...(['poetry.lock', 'uv.lock', 'pdm.lock'] as const).map(
+      (lock): EcosystemCase => ({
+        ecosystem: lock,
+        manifest: ['pyproject.toml', pyproject(['rich>=13']), pyproject(['rich>=14']), pyproject(['rich>=13', 'black>=24'])],
+        lockfile: [lock, tomlLock('rich'), tomlLock('rich', 'evil-pkg'), tomlLock('rich', 'black')],
+        smuggledName: 'evil-pkg',
+        addedName: 'black',
+      }),
+    ),
+    {
+      ecosystem: 'Cargo',
+      manifest: ['Cargo.toml', '[dependencies]\nserde = "1.0"\n', '[dependencies]\nserde = "1.0.200"\n', '[dependencies]\nserde = "1.0"\nrand = "0.8"\n'],
+      lockfile: ['Cargo.lock', cargoLock('serde'), cargoLock('serde', 'evil-pkg'), cargoLock('serde', 'rand')],
+      smuggledName: 'evil-pkg',
+      addedName: 'rand',
+    },
+    {
+      ecosystem: 'go.sum',
+      manifest: ['go.mod', 'module x\n\nrequire golang.org/x/text v0.3.0\n', 'module x\n\nrequire golang.org/x/text v0.14.0\n', 'module x\n\nrequire golang.org/x/text v0.3.0\nrequire github.com/google/uuid v1.6.0\n'],
+      lockfile: [
+        'go.sum',
+        'golang.org/x/text v0.3.0 h1:a\n',
+        'golang.org/x/text v0.3.0 h1:a\ngithub.com/evil/mod v1.0.0 h1:b\n',
+        'golang.org/x/text v0.3.0 h1:a\ngithub.com/google/uuid v1.6.0 h1:c\n',
+      ],
+      smuggledName: 'github.com/evil/mod',
+      addedName: 'github.com/google/uuid',
+    },
+    {
+      ecosystem: 'composer',
+      manifest: ['composer.json', json({ require: { 'laravel/framework': '^10.0' } }), json({ require: { 'laravel/framework': '^11.0' } }), json({ require: { 'laravel/framework': '^10.0', 'monolog/monolog': '^3.0' } })],
+      lockfile: ['composer.lock', composerLock('laravel/framework'), composerLock('laravel/framework', 'evil/pkg'), composerLock('laravel/framework', 'monolog/monolog')],
+      smuggledName: 'evil/pkg',
+      addedName: 'monolog/monolog',
+    },
+    {
+      ecosystem: 'gradle',
+      manifest: ['build.gradle', gradle('org.slf4j:slf4j-api:2.0.0'), gradle('org.slf4j:slf4j-api:2.0.13'), gradle('org.slf4j:slf4j-api:2.0.0', 'com.google.guava:guava:33.0.0-jre')],
+      lockfile: [
+        'gradle.lockfile',
+        'org.slf4j:slf4j-api:2.0.0=compileClasspath\n',
+        'org.slf4j:slf4j-api:2.0.0=compileClasspath\ncom.evil:pkg:1.0=compileClasspath\n',
+        'org.slf4j:slf4j-api:2.0.0=compileClasspath\ncom.google.guava:guava:33.0.0-jre=compileClasspath\n',
+      ],
+      smuggledName: 'com.evil:pkg',
+      addedName: 'com.google.guava:guava',
+    },
+  ];
+
+  it.each(cases)('$ecosystem: a manifest bump next to an unrelated lockfile addition is gated and labelled', async ({ manifest, lockfile, smuggledName }) => {
+    const [manifestPath, manifestBase, bump] = manifest;
+    const [lockPath, lockBase, smuggled] = lockfile;
+    const result = await detect({ [manifestPath]: manifestBase, [lockPath]: lockBase }, [
+      { path: manifestPath, action: 'update', content: bump },
+      { path: lockPath, action: 'update', content: smuggled },
+    ]);
+    expect(result.findings.map((f) => [f.name, f.file, f.source, f.uncertain, f.reason])).toEqual([[smuggledName, lockPath, 'lockfile', false, LOCKFILE_FINDING_REASONS.possiblyTransitive]]);
+    expect(result.fingerprint).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it.each(cases)('$ecosystem: a manifest addition with its own lockfile entry yields only the manifest finding', async ({ manifest, lockfile, addedName }) => {
+    const [manifestPath, manifestBase, , addition] = manifest;
+    const [lockPath, lockBase, , ownEntry] = lockfile;
+    const result = await detect({ [manifestPath]: manifestBase, [lockPath]: lockBase }, [
+      { path: manifestPath, action: 'update', content: addition },
+      { path: lockPath, action: 'update', content: ownEntry },
+    ]);
+    expect(result.findings.map((f) => [f.name, f.file, f.source])).toEqual([[addedName, manifestPath, 'manifest']]);
+    const manifestOnly = await detect({ [manifestPath]: manifestBase }, [{ path: manifestPath, action: 'update', content: addition }]);
+    expect(result.fingerprint).toBe(manifestOnly.fingerprint);
+  });
+
+  it('bun.lockb: a binary lockfile change is a possible addition that cannot be inspected, with or without a manifest change', async () => {
+    const base = { 'package.json': pkgJson({ express: '^1.0.0' }), 'bun.lockb': 'binary-v1' };
+    const bumpOnly = await detect(base, [
+      { path: 'package.json', action: 'update', content: pkgJson({ express: '^1.1.0' }) },
+      { path: 'bun.lockb', action: 'update', content: 'binary-v2' },
+    ]);
+    expect(bumpOnly.findings).toHaveLength(1);
+    expect(bumpOnly.findings[0]).toMatchObject({ file: 'bun.lockb', source: 'lockfile', uncertain: true, registryUrl: null, reason: LOCKFILE_FINDING_REASONS.opaque });
+    expect(bumpOnly.findings[0]!.reason).toMatch(/cannot inspect/);
+    expect(bumpOnly.findings[0]!.reason).toMatch(/Bumping an existing dependency also changes it/);
+
+    const withAddition = await detect(base, [
+      { path: 'package.json', action: 'update', content: pkgJson({ express: '^1.0.0', 'left-pad': '^1.0.0' }) },
+      { path: 'bun.lockb', action: 'update', content: 'binary-v2' },
+    ]);
+    expect(withAddition.findings.map((f) => [f.name, f.source, f.uncertain])).toEqual([
+      ['left-pad', 'manifest', false],
+      ['unparsed change in bun.lockb', 'lockfile', true],
+    ]);
+    expect(await detect(base, [{ path: 'bun.lockb', action: 'update', content: 'binary-v1' }])).toEqual({ findings: [], fingerprint: null });
+  });
+
+  it('keeps manifests and configs ahead of lockfile findings in the approval payload', async () => {
+    const lockNext = yarnLock(...Array.from({ length: 250 }, (_, i) => `transitive-${i}`));
+    const detection = await detect({ 'yarn.lock': yarnLock() }, [
+      { path: 'package.json', action: 'create', content: pkgJson({ zod: '^4.0.0' }) },
+      { path: 'yarn.lock', action: 'update', content: lockNext },
+    ]);
+    const details = dependencyApprovalDetails(detection);
+    expect(details.totalFindings).toBe(251);
+    expect(details.findings[0]).toMatchObject({ name: 'zod', source: 'manifest' });
+    expect(details.fingerprint).toBe(detection.fingerprint);
+  });
+});
+
+describe('other skip paths closed by the review fix', () => {
+  const npmLock = (packages: Record<string, unknown>, extra: Record<string, unknown> = {}) => json({ lockfileVersion: 3, packages: { '': { dependencies: { express: '^4.18.0' } }, ...packages }, ...extra });
+  const registry = (name: string, version = '1.0.0') => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz` });
+
+  it('package-lock v3: reports nested and hoisted transitive additions and source swaps, not workspace links', async () => {
+    const base = npmLock({ 'node_modules/express': registry('express', '4.18.2') });
+    const next = npmLock({
+      'node_modules/express': { version: '4.18.2', resolved: 'https://evil.example/express-4.18.2.tgz' },
+      'node_modules/express/node_modules/evil-nested': registry('evil-nested'),
+      'node_modules/@scope/hoisted': registry('@scope/hoisted'),
+      'node_modules/@acme/utils': { resolved: 'packages/utils', link: true },
+      'packages/utils': { name: '@acme/utils', version: '0.0.0' },
+    });
+    const result = await detect({ 'package-lock.json': base }, [{ path: 'package-lock.json', action: 'update', content: next }]);
+    expect(result.findings.map((f) => [f.name, f.detail])).toEqual([
+      ['@scope/hoisted', null],
+      ['evil-nested', null],
+      ['express', 'resolved from evil.example'],
+    ]);
+    expect(result.findings[2]!.reason).toBe(`${LOCKFILE_FINDING_REASONS.undeclared}. Downloaded from a registry or URL other than registry.npmjs.org`);
+    // A version bump from the registry is not an addition.
+    const bump = npmLock({ 'node_modules/express': registry('express', '4.19.0') });
+    expect((await detect({ 'package-lock.json': base }, [{ path: 'package-lock.json', action: 'update', content: bump }])).findings).toEqual([]);
+  });
+
+  it('package-lock v1 and the legacy section of v2: nested dependency trees and Git sources', async () => {
+    const v1 = (deps: Record<string, unknown>) => json({ lockfileVersion: 1, dependencies: deps });
+    const base = v1({ express: { version: '4.18.2', dependencies: { debug: { version: '2.6.9' } } } });
+    const next = v1({
+      express: { version: '4.18.2', dependencies: { debug: { version: '2.6.9', dependencies: { 'deep-evil': { version: '1.0.0' } } } } },
+      'git-dep': { version: 'git+https://github.com/evil/git-dep.git#abc123' },
+      local: { version: 'file:packages/local' },
+    });
+    expect(names(diffDependencyFile('package-lock.json', base, next))).toEqual(['deep-evil', 'git-dep']);
+
+    const v2Base = json({ lockfileVersion: 2, packages: { '': {} }, dependencies: {} });
+    const v2Next = json({ lockfileVersion: 2, packages: { '': {} }, dependencies: { 'legacy-only': { version: '1.0.0' } } });
+    expect(names(diffDependencyFile('package-lock.json', v2Base, v2Next))).toEqual(['legacy-only']);
+  });
+
+  it('pnpm-lock.yaml and bun.lock: packages sections are diffed, not only importers and workspaces', () => {
+    const pnpm = (extra: string) => `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      express:\n        specifier: ^4.18.0\n        version: 4.18.2\n\npackages:\n\n  express@4.18.2:\n    resolution: {integrity: sha512-x}\n${extra}\nsnapshots:\n\n  express@4.18.2: {}\n`;
+    const pnpmNext = pnpm("\n  evil@1.0.0:\n    resolution: {integrity: sha512-y}\n\n  '@scope/peer@2.0.0(react@18.0.0)':\n    resolution: {integrity: sha512-z}\n");
+    expect(names(diffDependencyFile('pnpm-lock.yaml', pnpm(''), pnpmNext))).toEqual(['@scope/peer', 'evil']);
+    const v5 = "lockfileVersion: 5.4\n\ndependencies:\n  express: 4.18.2\n\npackages:\n\n  /express/4.18.2:\n    resolution: {integrity: sha512-x}\n";
+    expect(names(diffDependencyFile('pnpm-lock.yaml', v5, `${v5}\n  /@scope/evil/1.0.0_react@18.0.0:\n    resolution: {integrity: sha512-y}\n`))).toEqual(['@scope/evil']);
+
+    const bun = (packages: Record<string, unknown[]>) => `{\n  "lockfileVersion": 1,\n  "workspaces": { "": { "dependencies": { "express": "^4.18.0" } } },\n  "packages": ${JSON.stringify(packages)},\n}\n`;
+    const bunBase = bun({ express: ['express@4.18.2', '', {}, 'sha512-x'] });
+    const bunNext = bun({ express: ['express@4.18.2', '', {}, 'sha512-x'], 'express/evil': ['evil@1.0.0', '', {}, 'sha512-y'], forked: ['forked@github:evil/forked#abc', {}] });
+    const findings = diffDependencyFile('bun.lock', bunBase, bunNext);
+    expect(findings.map((f) => [f.name, f.reason])).toEqual([
+      ['evil', null],
+      ['forked', 'Installed from a URL or Git repository instead of the registry'],
+    ]);
+  });
+
+  it('Gemfile.lock specs, packages.lock.json transitive packages and Cargo.lock Git sources', () => {
+    const gemLock = (specs: string, git = '') => `${git}GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (3.0.0)\n${specs}\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  rack (~> 3.0)\n`;
+    const gems = diffDependencyFile('Gemfile.lock', gemLock(''), gemLock('    evil-gem (1.0.0)\n      rack (>= 2)\n', 'GIT\n  remote: https://github.com/evil/fork.git\n  revision: abc\n  specs:\n    forked (0.1.0)\n\n'));
+    expect(gems.map((f) => [f.name, f.version, f.detail])).toEqual([
+      ['forked', '0.1.0', 'source https://github.com/evil/fork.git'],
+      ['evil-gem', '1.0.0', null],
+    ]);
+
+    const nuget = (extra: Record<string, unknown>) => json({ version: 1, dependencies: { net8: { Serilog: { type: 'Direct', requested: '[3.0.0, )' }, Core: { type: 'Project' }, ...extra } } });
+    expect(names(diffDependencyFile('packages.lock.json', nuget({}), nuget({ 'Evil.Transitive': { type: 'Transitive', resolved: '1.0.0' }, 'Local.Project': { type: 'Project' } })))).toEqual(['Evil.Transitive']);
+
+    const cargo = (source: string) => `[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "${source}"\n`;
+    const swapped = diffDependencyFile('Cargo.lock', cargo('registry+https://github.com/rust-lang/crates.io-index'), cargo('git+https://github.com/evil/serde#abc'));
+    expect(swapped.map((f) => [f.name, f.detail])).toEqual([['serde', 'source git+https://github.com/evil/serde']]);
+    expect(diffDependencyFile('Cargo.lock', cargo('registry+https://github.com/rust-lang/crates.io-index'), cargo('sparse+https://index.crates.io/'))).toEqual([]);
+  });
+
+  it('package.json overrides and resolutions that swap packages, and Cargo [patch] sources', () => {
+    const base = json({ dependencies: { express: '^4.18.0' } });
+    const next = json({
+      dependencies: { express: '^4.18.0' },
+      overrides: { debug: '4.3.4', express: { 'body-parser': 'npm:evil-parser@1.0.0' } },
+      resolutions: { '**/qs': 'github:evil/qs' },
+      pnpm: { overrides: { 'path-to-regexp': 'https://evil.example/ptr.tgz' } },
+    });
+    expect(diffDependencyFile('package.json', base, next).map((f) => [f.name, f.detail])).toEqual([
+      ['evil-parser', 'overrides body-parser'],
+      ['**/qs', 'resolutions **/qs'],
+      ['path-to-regexp', 'pnpm.overrides path-to-regexp'],
+    ]);
+
+    const cargo = diffDependencyFile('Cargo.toml', '[dependencies]\nserde = "1"\n', '[dependencies]\nserde = "1"\n\n[patch.crates-io]\nserde = { git = "https://github.com/evil/serde" }\nlocal = { path = "../local" }\n\n[patch.crates-io.tokio]\ngit = "https://github.com/evil/tokio"\n');
+    expect(cargo.map((f) => [f.name, f.version])).toEqual([
+      ['serde', 'https://github.com/evil/serde'],
+      ['tokio', 'https://github.com/evil/tokio'],
+    ]);
+  });
+
+  it('requirements files included with -r are inspected under any name when they are in the change set', async () => {
+    const result = await detect({ 'requirements.txt': 'requests==2.31.0\n' }, [
+      { path: 'requirements.txt', action: 'update', content: 'requests==2.31.0\n-rdeps/extra.txt\n' },
+      { path: 'deps/extra.txt', action: 'create', content: '-r ../more/base-deps.txt\nevil-pkg==1.0\n' },
+      { path: 'more/base-deps.txt', action: 'create', content: 'another-evil\n' },
+      { path: 'notes.txt', action: 'create', content: 'not-a-package\n' },
+    ]);
+    expect(result.findings.map((f) => [f.name, f.file])).toEqual([
+      ['evil-pkg', 'deps/extra.txt'],
+      ['requirements file ../more/base-deps.txt', 'deps/extra.txt'],
+      ['another-evil', 'more/base-deps.txt'],
+      ['requirements file deps/extra.txt', 'requirements.txt'],
+    ]);
+  });
+
+  it('reports renamed and re-created dependency files against their new path', async () => {
+    const result = await detect({ 'yarn.lock': 'express@^4.18.0:\n  version "4.18.2"\n' }, [
+      { path: 'yarn.lock', action: 'delete' },
+      { path: 'apps/web/yarn.lock', action: 'create', content: 'express@^4.18.0:\n  version "4.18.2"\n' },
+    ]);
+    expect(result.findings.map((f) => [f.name, f.file, f.reason])).toEqual([['express', 'apps/web/yarn.lock', LOCKFILE_FINDING_REASONS.undeclared]]);
+  });
+});
+
 describe('fingerprints and approval payloads', () => {
   it('is independent of change order and changes when the set of additions changes', async () => {
     const a = { path: 'package.json', action: 'create' as const, content: json({ dependencies: { zod: '^4' } }) };
@@ -482,6 +749,12 @@ describe('hostile inputs (ReDoS and size)', () => {
       ['build.gradle', `${'implementation('.repeat(HUGE / 15)}\n${'id '.repeat(HUGE / 3)}`],
       ['yarn.lock', `${'"a@1", '.repeat(HUGE / 8)}:\n`],
       ['pnpm-lock.yaml', `lockfileVersion: 9\nimporters:\n${'    dependencies:\n'.repeat(HUGE / 20)}`],
+      ['pnpm-lock.yaml', `lockfileVersion: 9\npackages:\n${`  ${'@'.repeat(200)}/${'('.repeat(200)}:\n`.repeat(HUGE / 400)}`],
+      ['package-lock.json', `{"lockfileVersion":1,"dependencies":${'{"a":{"version":"1","dependencies":'.repeat(2000)}{}${'}}'.repeat(2000)}}`],
+      ['package-lock.json', json({ lockfileVersion: 3, packages: Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`${'node_modules/'.repeat(20)}p${i}`, { version: '1', resolved: `git+https://x/${i}#${'#'.repeat(20)}` }])) })],
+      ['bun.lock', `{"workspaces":{"":{}},"packages":{${'"a":["@@@@@@@@",{}],'.repeat(HUGE / 20)}}}`],
+      ['Gemfile.lock', `GEM\n  specs:\n${'    a ((((((((\n'.repeat(HUGE / 14)}DEPENDENCIES\n`],
+      ['Cargo.lock', `${'[[package]]\nname = "a"\nsource = "git+x#####"\n'.repeat(HUGE / 40)}`],
       ['.mcp.json', json({ mcpServers: Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`s${i}`, { command: 'docker', args: ['run', ...Array(50).fill('-e')] }])) })],
     ];
     for (const [path, content] of cases) {

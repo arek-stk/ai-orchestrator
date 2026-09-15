@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defaultProjectProfile, defaultProjectSettings } from '../domain/project';
+import { dependencyApprovalGrant, detectDependencyAdditions, LOCKFILE_FINDING_REASONS } from '../approval/dependencies';
 import { createOrchestratorTools } from '../orchestrator/tools';
 import { unavailableSandbox } from '../sandbox/port';
 import { InMemoryGitHub } from '../testing/in-memory-github';
@@ -158,6 +159,33 @@ describe('ToolRouter', () => {
     await expect(tools.invoke('git.commit', args, ctx)).rejects.toMatchObject({ reason: 'approval_required', gatedAction: 'dependency_addition', detail: expect.stringContaining('left-pad@1.3.0 (npm)') });
     changes[0] = { ...changes[0]!, content: JSON.stringify({ dependencies: { express: '^4.19.0' } }) };
     await expect(tools.invoke('git.commit', args, ctx)).resolves.toMatchObject({ sha: expect.any(String) });
+  });
+
+  it('refuses a commit that smuggles a lockfile-only addition next to a manifest bump until exactly that set is approved', async () => {
+    const github = new InMemoryGitHub();
+    const repo = { owner: 'acme', name: 'shop' };
+    const yarnBase = '# yarn lockfile v1\n\nexpress@^4.18.0:\n  version "4.18.2"\n';
+    const parentSha = github.seed(repo, { 'package.json': JSON.stringify({ dependencies: { express: '^4.18.0' } }), 'yarn.lock': yarnBase });
+    const tools = createOrchestratorTools({ github, sandbox: unavailableSandbox, sandboxTimeoutMs: 1_000 });
+    const changes = [
+      { path: 'package.json', action: 'update' as const, content: JSON.stringify({ dependencies: { express: '^4.19.0' } }) },
+      { path: 'yarn.lock', action: 'update' as const, content: `${yarnBase}\nevil-pkg@^1.0.0:\n  version "1.0.0"\n` },
+    ];
+    const base = context({ agentRole: 'orchestrator', workspace: { apply: () => undefined, changes: () => changes } });
+    const settings = defaultProjectSettings();
+    const everythingOff = Object.fromEntries(Object.keys(settings.approvalGates).map((k) => [k, false])) as typeof settings.approvalGates;
+    const ctx = { ...base, project: { ...base.project, autonomyLevel: 4 as const, settings: { ...settings, approvalGates: everythingOff } } };
+    const args = { branch: 'orchestrator/tsk-1', parentSha, message: 'chore: bump express' };
+
+    await expect(tools.invoke('git.commit', args, ctx)).rejects.toMatchObject({
+      reason: 'approval_required',
+      gatedAction: 'dependency_addition',
+      detail: expect.stringContaining('evil-pkg@^1.0.0 (npm)'),
+    });
+    const detection = await detectDependencyAdditions(changes, (path) => github.getFileContent(repo, path, parentSha));
+    expect(detection.findings.map((f) => [f.name, f.reason])).toEqual([['evil-pkg', LOCKFILE_FINDING_REASONS.possiblyTransitive]]);
+    await expect(tools.invoke('git.commit', args, { ...ctx, approvedActions: ['dependency_addition'] })).rejects.toMatchObject({ reason: 'approval_required' });
+    await expect(tools.invoke('git.commit', args, { ...ctx, approvedActions: [dependencyApprovalGrant(detection.fingerprint!)] })).resolves.toMatchObject({ sha: expect.any(String) });
   });
 
   it('denies calls that exceed the budget headroom', async () => {

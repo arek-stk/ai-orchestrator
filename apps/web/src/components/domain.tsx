@@ -603,9 +603,14 @@ function safeRegistryUrl(url: string | null): string | null {
   return url && REGISTRY_URL_PREFIXES.some((prefix) => url.startsWith(prefix)) ? url : null;
 }
 
-/** New dependencies waiting for approval: what, which version, from where, and how risky. */
+/** Reason prefix the server uses for lockfile entries that appeared while a manifest changed too (ADR-031). */
+const POSSIBLY_TRANSITIVE_REASON = 'Lockfile addition not declared in manifest (possibly transitive)';
+
+/** New dependencies waiting for approval: declared additions first, lockfile-only additions in their own group. */
 export function DependencyFindings({ details }: { details: DependencyApprovalDetails }) {
   const hidden = details.totalFindings - details.findings.length;
+  const declared = details.findings.filter((finding) => finding.source !== 'lockfile');
+  const lockfile = details.findings.filter((finding) => finding.source === 'lockfile');
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -614,7 +619,24 @@ export function DependencyFindings({ details }: { details: DependencyApprovalDet
         </span>
         {details.highRisk ? <StatusBadge tone="critical" label="High risk" title="Runs inside developer or CI environments" /> : null}
       </div>
-      <div className="-mx-2 overflow-x-auto" role="region" aria-label="New dependencies" tabIndex={0}>
+      {declared.length > 0 ? <DependencyFindingTable findings={declared} label="Declared in manifests and configs" /> : null}
+      {lockfile.length > 0 ? (
+        <div className={declared.length > 0 ? 'mt-3' : undefined}>
+          <p className="mb-1 text-xs font-medium text-ink-2">Only in lockfiles ({lockfile.length})</p>
+          <p className="mb-2 text-xs text-ink-2">
+            Not declared in a manifest in this change. Usually transitive packages of the change, but they are installed too, so review each one.
+          </p>
+          <DependencyFindingTable findings={lockfile} label="Lockfile-only dependencies" />
+        </div>
+      ) : null}
+      {hidden > 0 ? <p className="mt-2 text-xs text-ink-2">{hidden} more not shown; open the run for the full change set.</p> : null}
+    </div>
+  );
+}
+
+function DependencyFindingTable({ findings, label }: { findings: DependencyApprovalDetails['findings']; label: string }) {
+  return (
+      <div className="-mx-2 overflow-x-auto" role="region" aria-label={label} tabIndex={0}>
         <table className="w-full border-collapse">
           <thead>
             <tr>
@@ -626,7 +648,7 @@ export function DependencyFindings({ details }: { details: DependencyApprovalDet
             </tr>
           </thead>
           <tbody>
-            {details.findings.map((finding, index) => {
+            {findings.map((finding, index) => {
               const url = safeRegistryUrl(finding.registryUrl);
               return (
                 <tr key={`${finding.file}:${finding.ecosystem}:${finding.name}:${index}`}>
@@ -634,7 +656,15 @@ export function DependencyFindings({ details }: { details: DependencyApprovalDet
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Mono className="break-all">{finding.name}</Mono>
                       {finding.risk === 'high' ? <StatusBadge tone="critical" label="High risk" title={humanize(finding.kind)} /> : null}
-                      {finding.uncertain ? <StatusBadge tone="warning" label="Not parsed" /> : null}
+                      {finding.uncertain ? (
+                        <StatusBadge tone="warning" label={finding.source === 'lockfile' ? 'Cannot inspect' : 'Not parsed'} />
+                      ) : finding.source === 'lockfile' ? (
+                        <StatusBadge
+                          tone="serious"
+                          label={finding.reason?.startsWith(POSSIBLY_TRANSITIVE_REASON) ? 'Possibly transitive' : 'Lockfile only'}
+                          title="Not declared in a manifest in this change"
+                        />
+                      ) : null}
                     </div>
                     {finding.detail ? <p className="mt-0.5 text-xs text-ink-2">{finding.detail}</p> : null}
                     {finding.reason ? <p className="mt-0.5 text-xs text-ink-2">{finding.reason}</p> : null}
@@ -664,8 +694,6 @@ export function DependencyFindings({ details }: { details: DependencyApprovalDet
           </tbody>
         </table>
       </div>
-      {hidden > 0 ? <p className="mt-2 text-xs text-ink-2">{hidden} more not shown; open the run for the full change set.</p> : null}
-    </div>
   );
 }
 
