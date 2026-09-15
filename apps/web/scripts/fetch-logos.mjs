@@ -42,10 +42,26 @@ function titleToSlug(title) {
   return [...replaced].filter((ch) => (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')).join('');
 }
 
+const MAX_BYTES = 2_000_000;
+const SAFE_OUTPUT = /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[ a-zA-Z0-9="#.\-:]*>(?:<title>[^<>]*<\/title>)?(?:<\/?(?:g|path|circle|ellipse|rect|line|polyline|polygon)(?: [a-z-]+="[^"<>&`]*")*\/?>)*<\/svg>\n$/;
+
+/** Downloads only from the pinned Simple Icons tag and refuses oversized responses. */
 async function fetchText(url) {
-  const response = await fetch(url);
+  if (!url.startsWith(`${RAW}/`)) throw new Error(`refusing to fetch outside the pinned Simple Icons tag: ${url}`);
+  const response = await fetch(url, { redirect: 'error' });
   if (!response.ok) throw new Error(`GET ${url} failed with ${response.status}`);
-  return response.text();
+  const text = await response.text();
+  if (text.length > MAX_BYTES) throw new Error(`GET ${url} returned more than ${MAX_BYTES} bytes`);
+  return text;
+}
+
+/**
+ * Downloaded content is untrusted: only the sanitiser's re-serialised output is written, and only after it is checked
+ * again against the exact shape the sanitiser can produce (root, optional title, allow-listed shape elements).
+ */
+function verifiedSvg(svg, slug) {
+  if (svg.length > 200_000 || !SAFE_OUTPUT.test(svg)) throw new Error(`sanitised SVG for "${slug}" failed verification`);
+  return svg;
 }
 
 async function main() {
@@ -60,7 +76,8 @@ async function main() {
     const meta = bySlug.get(slug);
     if (!meta) throw new Error(`Simple Icons ${SIMPLE_ICONS_TAG} has no icon "${slug}"`);
     const url = `${RAW}/icons/${slug}.svg`;
-    const svg = sanitizeSvg(await fetchText(url), { fill: `#${meta.hex.toUpperCase()}` });
+    if (!/^[0-9A-Fa-f]{6}$/.test(meta.hex)) throw new Error(`Simple Icons data has an invalid colour for "${slug}"`);
+    const svg = verifiedSvg(sanitizeSvg(await fetchText(url), { fill: `#${meta.hex.toUpperCase()}` }), slug);
     await writeFile(join(outDir, `${toolId}.svg`), svg, 'utf8');
     rows.push(`| \`${toolId}.svg\` | ${meta.title} | ${url} | #${meta.hex.toUpperCase()} | CC0-1.0 (Simple Icons) | ${meta.source ?? 'n/a'} | ${fetchedOn} |`);
     console.log(`wrote ${toolId}.svg (${slug})`);
