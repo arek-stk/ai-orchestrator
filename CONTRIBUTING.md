@@ -45,6 +45,17 @@ npm test            # vitest, no database or Docker required (embedded PGlite, i
 * **CodeQL**, **dependency review** and **OpenSSF Scorecard** scan for vulnerabilities.
 * **Dependabot** opens grouped weekly updates; minor and patch updates auto-merge after CI passes.
 * **Labeler** labels pull requests by the areas they touch; **stale** closes inactive issues after 74 days.
+* **Repo Guardian** (`.github/workflows/repo-guardian.yml`) checks the repository every 6 hours, after CI on `main`
+  and on docs pushes: CI and scheduled workflows on `main`, code scanning, Dependabot and secret scanning alerts, open
+  pull requests (failing checks, conflicts, unresolved review threads, no activity for 7 days), that branch protection
+  still requires `Typecheck and test`, docs consistency (`docs/STATE.md` rows marked 🚧 for more than 14 days, unique
+  ADR numbers, referenced plans, relative markdown links), branches without a PR older than 30 days and Dependabot PRs
+  older than 7 days. Results live in one "Repo Guardian report" issue that closes itself when everything is ok; if a
+  check could not run (API error), the report is marked degraded and the issue stays open.
+  Run the docs part locally with `node .github/scripts/repo-guardian/repo-guardian.mjs --docs`.
+  * Optional secret `REPO_GUARDIAN_TOKEN`: a fine-grained personal access token for this repository only with
+    read-only **Secret scanning alerts** and **Administration** permissions. Without it, secret scanning shows as
+    "not checked" and branch protection is read from the public protection summary.
 
 ## AI assistance
 
