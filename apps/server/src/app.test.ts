@@ -157,6 +157,51 @@ describe('projects, tasks and the pipeline through the API', () => {
     const audit = (await app.inject({ url: '/api/audit', headers: { cookie: ownerCookie } })).json();
     expect(audit.entries.some((e: { action: string }) => e.action === 'tool.github.pr.create.allowed')).toBe(true);
   });
+
+  it('parks a run on a new dependency, returns typed findings and continues after approval (ADR-031)', async () => {
+    const headers = { cookie: ownerCookie, origin: ORIGIN };
+    const depsRepo = { owner: 'acme', name: 'deps' };
+    github.seed(depsRepo, { 'package.json': JSON.stringify({ name: 'demo-shop', type: 'module', scripts: { test: 'vitest run' } }, null, 2), 'src/index.ts': 'export {};\n' });
+    const created = await app.inject({ method: 'POST', url: '/api/projects', headers, payload: { name: 'Deps', repo: depsRepo, autonomyLevel: 4, profile: { languages: ['TypeScript'] } } });
+    expect(created.statusCode).toBe(201);
+    const project = created.json().project;
+
+    // The gate cannot be switched off through the API, and stored configurations cannot switch it off either.
+    const off = await app.inject({ method: 'PATCH', url: `/api/projects/${project.id}`, headers, payload: { settings: { approvalGates: { dependency_addition: false } } } });
+    expect(off.statusCode).toBe(400);
+    expect(JSON.stringify(off.json())).toMatch(/cannot be disabled/);
+    const stored = (await container.repos.projects.get(project.id))!;
+    await container.repos.projects.update(project.id, { settings: { ...stored.settings, approvalGates: { ...stored.settings.approvalGates, dependency_addition: false } } });
+    expect((await container.repos.projects.get(project.id))!.settings.approvalGates.dependency_addition).toBe(true);
+
+    const task = (await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks`, headers, payload: { title: 'Add a schema validation library', goal: 'Validate cart input with a schema library' } })).json().task;
+    const runId = (await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/start`, headers })).json().run.id;
+    const workers = new WorkerPool(container, { concurrency: 1, schedulerIntervalMs: 60_000 });
+    await workers.drain();
+    expect((await app.inject({ url: `/api/runs/${runId}`, headers: { cookie: ownerCookie } })).json().run.status).toBe('WAITING');
+    expect(github.pulls(depsRepo)).toHaveLength(0);
+
+    const pending = (await app.inject({ url: `/api/approvals?status=pending&projectId=${project.id}`, headers: { cookie: ownerCookie } })).json().approvals;
+    expect(pending).toHaveLength(1);
+    const [approval] = pending;
+    expect(approval).toMatchObject({ action: 'dependency_addition', runId, details: { fingerprint: expect.any(String) } });
+    expect(approval.dependencies).toMatchObject({ totalFindings: 1, highRisk: false, paths: ['package.json'] });
+    expect(approval.dependencies.findings).toEqual([
+      expect.objectContaining({ name: 'zod', version: '^4.1.0', ecosystem: 'npm', file: 'package.json', kind: 'package', risk: 'normal', registryUrl: 'https://www.npmjs.com/package/zod' }),
+    ]);
+    const runDetail = (await app.inject({ url: `/api/runs/${runId}`, headers: { cookie: ownerCookie } })).json();
+    expect(runDetail.approvals[0].dependencies.fingerprint).toBe(approval.dependencies.fingerprint);
+
+    const decided = await app.inject({ method: 'POST', url: `/api/approvals/${approval.id}/decide`, headers, payload: { status: 'approved' } });
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json().approval.dependencies.findings[0].name).toBe('zod');
+    await workers.drain();
+    const finished = (await app.inject({ url: `/api/runs/${runId}`, headers: { cookie: ownerCookie } })).json().run;
+    expect(finished.status).toBe('SUCCEEDED');
+    expect(finished.checkpoint.approvedActions).toEqual([`dependency_addition:${approval.dependencies.fingerprint}`]);
+    const [pr] = github.pulls(depsRepo);
+    expect(JSON.parse(github.fileAt(depsRepo, github.branch(depsRepo, pr!.head)!, 'package.json')!).dependencies).toEqual({ zod: '^4.1.0' });
+  });
 });
 
 describe('models, providers and settings', () => {

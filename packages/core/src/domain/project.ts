@@ -10,8 +10,12 @@ export const GATED_ACTIONS = [
   'high_cost',
   'external_service',
   'critical_infrastructure',
+  'dependency_addition',
 ] as const;
 export type GatedAction = (typeof GATED_ACTIONS)[number];
+
+/** Gates that no autonomy level and no project gate configuration can switch off (ADR-031). */
+export const HARD_GATED_ACTIONS: readonly GatedAction[] = Object.freeze(['dependency_addition'] as const);
 
 export interface StopConditions {
   maxIterations: number;
@@ -121,6 +125,7 @@ export function defaultApprovalGates(): Record<GatedAction, boolean> {
     high_cost: true,
     external_service: true,
     critical_infrastructure: true,
+    dependency_addition: true,
   };
 }
 
@@ -217,7 +222,11 @@ export const ProjectProfileSchema = z.object({
 export const ProjectSettingsSchema = z.object({
   stopConditions: StopConditionsSchema,
   council: CouncilSettingsSchema,
-  approvalGates: z.record(z.enum(GATED_ACTIONS), z.boolean()),
+  approvalGates: z
+    .record(z.enum(GATED_ACTIONS), z.boolean())
+    .refine((gates) => HARD_GATED_ACTIONS.every((action) => gates[action] !== false), {
+      message: 'dependency_addition cannot be disabled: every new dependency needs human approval (ADR-031)',
+    }),
   highCostThresholdUsd: z.number().min(0).max(10_000),
   maxConcurrentTasks: z.number().int().min(1).max(20),
   modelOverrides: z.partialRecord(z.enum(AGENT_ROLES), z.string().min(1).max(200)),
