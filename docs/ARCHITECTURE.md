@@ -197,6 +197,27 @@ root wraps the event recorder with `withRoomProjection`, so allow-listed orchest
 per-run capped room notices. API: `apps/server/src/routes-room.ts`; live updates are content-free `room.message` events
 on the SSE stream.
 
+### 4.16 AI Hub (web)
+`/hub` lets users discover AI tools and connect the ones the orchestrator can use. The UI (`apps/web/src/components/hub`)
+consumes only the `HubService` interface (`apps/web/src/lib/hub/service.ts`); pure search/category/filter/sort logic lives
+in `lib/hub/filter.ts`, shareable view state in `lib/hub/url-state.ts`, the static catalog in `lib/hub/catalog.ts`.
+* **`ApiHubService` (live):** connections are derived from `/api/providers` and `/api/models` (a tool is usable only when
+  an enabled, available registry model routes through its account, mirroring `DefaultProviderResolver`); usage comes from
+  `/api/costs` grouped by provider. Connecting a native or OpenAI-compatible tool calls the admin-only
+  `PUT /api/providers/:id` (key encrypted at rest, audited); disconnecting calls `DELETE`. Environment accounts are
+  read-only. The key is held only in component state for the request; only the display model preference is stored locally.
+* **`MockHubService` (demo):** simulated latency and optional failures (`?simulateError=1`), connections in
+  `localStorage`, never accepts credentials, never reports usage. The page uses it when the server runs in demo mode;
+  `?source=live|demo` switches explicitly.
+* **Honesty rules** (unit tested): `native` only for OpenAI, Anthropic and Google; `openai-compatible` only where the
+  vendor documents an OpenAI-compatible chat endpoint; everything else is `planned` or `no-public-api` and cannot be
+  connected. "Vom Orchestrator verwendbar" requires a supported integration, a connection and a routable model. Usage
+  bars show ledger data or "Noch keine Nutzungsdaten"; model lists come from the registry or are labelled "Beispiele";
+  pricing is non-numeric.
+* **Logos:** single-colour SVGs from a pinned Simple Icons release, sanitised by `apps/web/scripts/sanitize-svg.mjs`
+  (allow-list, tested), rendered via `<img>`; provenance and trademark notice in `apps/web/public/logos/SOURCES.md`.
+  Brands without a vendored logo use a neutral monogram or icon tile.
+
 ## 7. Deferred (post-MVP, interfaces already in place)
 Temporal workflow engine (behind `WorkflowEngine`), BullMQ/Redis queue (behind `JobQueue`), additional
 model providers, Frontend/Backend/Database specialist agents, web research tool (`research.web`) and registry-based

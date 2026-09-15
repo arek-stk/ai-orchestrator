@@ -16,6 +16,7 @@ import {
   Moon,
   Settings,
   ShieldCheck,
+  Sparkles,
   Sun,
   X,
   type LucideIcon,
@@ -52,6 +53,7 @@ const SECTION_LABELS: Record<string, string> = {
   approvals: 'Approvals',
   decisions: 'Decisions',
   costs: 'Costs',
+  hub: 'AI Hub',
   settings: 'Settings',
   projects: 'Projects',
 };
@@ -99,6 +101,8 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   badge?: number;
+  /** Short text label such as "Neu". */
+  tag?: string;
 }
 
 function isActive(pathname: string, href: string): boolean {
@@ -129,6 +133,14 @@ function NavList({ items, pathname, mode, onNavigate }: { items: NavItem[]; path
           >
             <item.icon aria-hidden="true" size={16} strokeWidth={active ? 2.25 : 1.75} className={active ? 'text-ink' : 'text-ink-2'} />
             <span className={cx('flex-1 truncate', responsive && 'sr-only lg:not-sr-only')}>{item.label}</span>
+            {item.tag ? (
+              <>
+                <span className={cx('inline-flex h-[18px] items-center rounded-full bg-accent-strong px-1.5 text-[10.5px] font-semibold leading-none text-white', responsive && 'sr-only lg:not-sr-only')}>
+                  {item.tag}
+                </span>
+                {responsive ? <span aria-hidden="true" className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-accent-strong lg:hidden" /> : null}
+              </>
+            ) : null}
             {item.badge ? (
               <span
                 aria-label={`${item.badge} pending`}
@@ -348,6 +360,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     { href: '/', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/projects', label: 'Projects', icon: FolderKanban },
     { href: '/agents', label: 'Agents', icon: Bot },
+    { href: '/hub', label: 'AI Hub', icon: Sparkles, tag: 'Neu' },
     { href: '/approvals', label: 'Approvals', icon: ShieldCheck, badge: pendingCount },
     { href: '/decisions', label: 'Decisions', icon: Lightbulb },
     { href: '/costs', label: 'Costs', icon: Coins },

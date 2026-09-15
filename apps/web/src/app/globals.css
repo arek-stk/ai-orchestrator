@@ -32,6 +32,27 @@
   --serious-soft: #fbe8e0;
   --critical-soft: #f8e3e1;
   --pop-shadow: 0 1px 2px rgba(11, 11, 11, 0.06), 0 6px 16px -4px rgba(11, 11, 11, 0.12);
+  /* AI Hub: glass cards, restrained violet/blue/cyan glows (soft tints in light mode), teal for connected tools. */
+  --hub-card: #ffffff;
+  --hub-card-2: #f6f6fb;
+  --hub-line: rgba(30, 41, 99, 0.1);
+  --hub-line-strong: rgba(30, 41, 99, 0.2);
+  --hub-violet: #7c5cf0;
+  --hub-blue: #3b6df0;
+  --hub-cyan: #0ea5c6;
+  --hub-glow-violet: rgba(124, 92, 240, 0.1);
+  --hub-glow-blue: rgba(59, 109, 240, 0.08);
+  --hub-glow-cyan: rgba(14, 165, 198, 0.07);
+  --hub-cta: #4f46e5;
+  --hub-cta-hover: #4338ca;
+  --hub-connected: #0f766e;
+  --hub-connected-soft: #e3f4f1;
+  --hub-connected-line: rgba(15, 118, 110, 0.45);
+  --hub-heading-from: #1e1b4b;
+  --hub-heading-to: #0e7490;
+  --hub-card-shadow: 0 1px 2px rgba(30, 41, 99, 0.05);
+  --hub-card-shadow-hover: 0 1px 2px rgba(30, 41, 99, 0.06), 0 14px 32px -16px rgba(79, 70, 229, 0.28);
+  --hub-backdrop: rgba(15, 17, 30, 0.36);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -59,6 +80,26 @@
     --serious-soft: #2f1f19;
     --critical-soft: #321b1b;
     --pop-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+    --hub-card: #12131b;
+    --hub-card-2: #191b26;
+    --hub-line: rgba(160, 170, 255, 0.1);
+    --hub-line-strong: rgba(160, 170, 255, 0.22);
+    --hub-violet: #a78bfa;
+    --hub-blue: #60a5fa;
+    --hub-cyan: #22d3ee;
+    --hub-glow-violet: rgba(139, 92, 246, 0.24);
+    --hub-glow-blue: rgba(59, 130, 246, 0.16);
+    --hub-glow-cyan: rgba(34, 211, 238, 0.12);
+    --hub-cta: #5b5cf0;
+    --hub-cta-hover: #6364f2;
+    --hub-connected: #5eead4;
+    --hub-connected-soft: rgba(45, 212, 191, 0.12);
+    --hub-connected-line: rgba(45, 212, 191, 0.42);
+    --hub-heading-from: #ffffff;
+    --hub-heading-to: #a5b4fc;
+    --hub-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    --hub-card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 40px -18px rgba(99, 102, 241, 0.45);
+    --hub-backdrop: rgba(3, 4, 10, 0.62);
   }
 }
 
@@ -86,6 +127,26 @@
   --serious-soft: #2f1f19;
   --critical-soft: #321b1b;
   --pop-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+  --hub-card: #12131b;
+  --hub-card-2: #191b26;
+  --hub-line: rgba(160, 170, 255, 0.1);
+  --hub-line-strong: rgba(160, 170, 255, 0.22);
+  --hub-violet: #a78bfa;
+  --hub-blue: #60a5fa;
+  --hub-cyan: #22d3ee;
+  --hub-glow-violet: rgba(139, 92, 246, 0.24);
+  --hub-glow-blue: rgba(59, 130, 246, 0.16);
+  --hub-glow-cyan: rgba(34, 211, 238, 0.12);
+  --hub-cta: #5b5cf0;
+  --hub-cta-hover: #6364f2;
+  --hub-connected: #5eead4;
+  --hub-connected-soft: rgba(45, 212, 191, 0.12);
+  --hub-connected-line: rgba(45, 212, 191, 0.42);
+  --hub-heading-from: #ffffff;
+  --hub-heading-to: #a5b4fc;
+  --hub-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --hub-card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 40px -18px rgba(99, 102, 241, 0.45);
+  --hub-backdrop: rgba(3, 4, 10, 0.62);
 }
 
 @theme inline {
@@ -117,6 +178,20 @@
   --color-serious-soft: var(--serious-soft);
   --color-critical-soft: var(--critical-soft);
   --shadow-pop: var(--pop-shadow);
+  --color-hub-card: var(--hub-card);
+  --color-hub-card-2: var(--hub-card-2);
+  --color-hub-line: var(--hub-line);
+  --color-hub-line-strong: var(--hub-line-strong);
+  --color-hub-violet: var(--hub-violet);
+  --color-hub-blue: var(--hub-blue);
+  --color-hub-cyan: var(--hub-cyan);
+  --color-hub-cta: var(--hub-cta);
+  --color-hub-cta-hover: var(--hub-cta-hover);
+  --color-hub-connected: var(--hub-connected);
+  --color-hub-connected-soft: var(--hub-connected-soft);
+  --color-hub-connected-line: var(--hub-connected-line);
+  --shadow-hub-card: var(--hub-card-shadow);
+  --shadow-hub-card-hover: var(--hub-card-shadow-hover);
 }
 
 html,
@@ -192,5 +267,172 @@ p {
   .animate-pulse,
   .animate-spin {
     animation: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------------------------------------------------
+ * AI Hub (apps/web/src/components/hub). Pure CSS glows; motion is limited to hover lift and panel/dialog entrances.
+ * ------------------------------------------------------------------------------------------------------------------- */
+
+.hub-hero {
+  background:
+    radial-gradient(55% 95% at 86% 18%, var(--hub-glow-violet), transparent 72%),
+    radial-gradient(45% 80% at 66% 105%, var(--hub-glow-cyan), transparent 70%),
+    radial-gradient(40% 70% at 6% -10%, var(--hub-glow-blue), transparent 70%),
+    var(--hub-card);
+}
+
+.hub-heading-gradient {
+  background: linear-gradient(90deg, var(--hub-heading-from), var(--hub-heading-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hub-card {
+  background-color: var(--hub-card);
+  border: 1px solid var(--hub-line);
+  box-shadow: var(--hub-card-shadow);
+  transition-property: transform, border-color, box-shadow;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.hub-card[data-connected] {
+  border-color: var(--hub-connected-line);
+  background-image: radial-gradient(120% 70% at 0% 0%, var(--hub-connected-soft), transparent 62%);
+}
+
+@media (hover: hover) {
+  .hub-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--hub-line-strong);
+    box-shadow: var(--hub-card-shadow-hover);
+  }
+
+  .hub-card[data-connected]:hover {
+    border-color: var(--hub-connected);
+  }
+}
+
+.hub-card[data-selected] {
+  box-shadow: 0 0 0 1px var(--hub-cta), var(--hub-card-shadow-hover);
+}
+
+.hub-card:has(.hub-card-title:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hub-card-title:focus-visible {
+  outline: none;
+}
+
+.hub-scroll-x {
+  scrollbar-width: none;
+}
+
+.hub-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 639px) {
+  .hub-scroll-x {
+    mask-image: linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 28px), transparent 100%);
+  }
+}
+
+@keyframes hub-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes hub-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes hub-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hub-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes hub-breathe {
+  0%,
+  100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.hub-panel-enter {
+  animation: hub-sheet-in 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@media (min-width: 640px) {
+  .hub-panel-enter {
+    animation-name: hub-slide-in;
+  }
+}
+
+.hub-fade-enter {
+  animation: hub-fade-in 180ms ease-out both;
+}
+
+.hub-modal-enter {
+  animation: hub-pop-in 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.hub-breathe {
+  animation: hub-breathe 6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-card,
+  .hub-card:hover {
+    transform: none;
+  }
+
+  .hub-panel-enter,
+  .hub-fade-enter,
+  .hub-modal-enter,
+  .hub-breathe {
+    animation: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .hub-heading-gradient {
+    background: none;
+    color: CanvasText;
   }
 }
