@@ -7,7 +7,7 @@ orchestration improvements) are merged, because it touches database, server, cor
 
 | Stage | State |
 |---|---|
-| 1 — Room on the unified conversation model | 🚧 in review. Built: `conversations` + `conversation_messages` (replaces `room_messages`, see the ADR-030 addendum), `RoomService` (sanitising, redaction, threads, seq cursors), `RoomEventProjector` (allow-listed, deduplicated, per-run capped notices), room API with SSE (`apps/server/src/routes-room.ts`), Room tab with threads and live updates, demo seed. |
+| 1 — Room on the unified conversation model | ✅ merged (PR #22). Built: `conversations` + `conversation_messages` (replaces `room_messages`, see the ADR-030 addendum), `RoomService` (sanitising, redaction, threads, seq cursors), `RoomEventProjector` (allow-listed, deduplicated, per-run capped notices), room API with SSE (`apps/server/src/routes-room.ts`), Room tab with threads and live updates, demo seed. |
 | 1 — remainder | Open: leases (`leases.ts`, scheduler and pipeline checks), board transitions and task columns (assignee, milestone, board position, estimate), `@orchestrator` commands, read markers. |
 | 2–4 | Open. Board and milestones UI, MCP server + AI identities, objections, roadmap. |
 

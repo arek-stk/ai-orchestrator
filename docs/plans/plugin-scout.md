@@ -2,7 +2,7 @@
 
 Request (2026-09-14): "und dass es extra einen Bot gibt, der für das jeweilige Projekt immer die passenden Plugins
 sucht in GitHub oder wo man die halt findet".
-Status: **proposal** (ADR-031 draft in §11). Nothing here is implemented. Builds on PR #12
+Status: **proposal** (ADR-035 draft in §11; ADR-031 became the dependency approval gate). Nothing here is implemented. Builds on PR #12
 (`feat/product-improvement`: health scan, improvement proposals, specialists, agent cache — ADR-013…016) and must not
 start before PR #12 is merged, because it reuses its tables, job wiring and route module.
 
@@ -70,7 +70,7 @@ Paths without prefix refer to the current working tree (`feat/web`, which contai
 | Web project tabs | `apps/web/src/app/projects/[id]/page.tsx:62-73`, `apps/web/src/components/project-tabs.tsx` | Add a `recommendations` tab. |
 
 ADR numbers in use: 001–012 (main), 013–016 (PR #12), 020–024 (platform operations), 030 (Project Room, planned).
-Highest = 030 → this plan proposes **ADR-031**.
+Numbering (updated 2026-09-15): ADR-031 dependency approval gate, 032 provider accounts, 033 planning assistant, 034 autopilot → this plan proposes **ADR-035**.
 
 ## 2. Goals and non-goals
 
@@ -404,9 +404,9 @@ download patterns (`curl | sh`), and exfiltration endpoints. Result = flags only
 | Agent output cache | 7 d, key includes candidate set + stack digest | ADR-014 |
 | Purge | expired cache rows from the intelligence maintenance tick | `PR12:intelligence.ts:96-103` |
 
-## 11. Proposed ADR-031 (draft — not yet in `docs/DECISIONS.md`)
+## 11. Proposed ADR-035 (draft — not yet in `docs/DECISIONS.md`)
 
-> ## ADR-031 — Plugin Scout: per-project plugin discovery with deterministic trust scoring, proposals only
+> ## ADR-035 — Plugin Scout: per-project plugin discovery with deterministic trust scoring, proposals only
 > * **Context:** The owner wants a dedicated bot that keeps finding suitable plugins, extensions and tools for each
 >   project (GitHub, package registries, MCP registry, agent plugin marketplaces). Third-party code is the largest
 >   supply-chain risk of the system: typosquatting/slopsquatting, compromised maintainers (chalk/debug, Shai-Hulud),
@@ -498,7 +498,7 @@ with recorded, trimmed API fixtures — no live network in CI.
 ## 15. Open questions
 
 1. **ADR number collision:** ADR-013…016 (PR #12) and ADR-020…024 were numbered in parallel; the multi-account AI
-   research (`docs/research/multi-account-ai.md`) may also claim ADR-031. Reserve numbers in `docs/DECISIONS.md` before merging.
+   research (`docs/research/multi-account-ai.md`) may also claim ADR-031. **Resolved (2026-09-15):** 031 dependency approval gate, 032 provider accounts, 033 planning assistant, 034 autopilot, 035 plugin scout, 036 platform connectors.
 2. ~~**Scope of `dependency_addition` detection**~~ — **decided (owner, 2026-09-14):** hard rule for all new
    dependencies from any source (scout, builder agent in normal tasks, autopilot) at every autonomy level; see §9.3.
    It is built as a small security change right after PR #12, before the Plugin Scout itself.
