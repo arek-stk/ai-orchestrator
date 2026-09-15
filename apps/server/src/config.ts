@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import type { AutopilotLimits } from '@orch/core';
 import { loadOrCreateDevKey, parseEncryptionKey } from './crypto';
 
 const optionalString = z
@@ -43,6 +44,14 @@ const EnvSchema = z.object({
   APPROVAL_TTL_HOURS: z.coerce.number().min(0).max(24 * 365).default(72),
   MIGRATIONS_DIR: optionalString,
   EVENT_FANOUT: z.enum(['auto', 'off']).default('auto'),
+  // Autopilot / away mode (ADR-034). Off by default in production.
+  AUTOPILOT_ENABLED: z.enum(['true', 'false', '1', '0']).optional(),
+  AUTOPILOT_MAX_HOURS: z.coerce.number().positive().max(24 * 14).default(72),
+  AUTOPILOT_MAX_BUDGET_USD: z.coerce.number().positive().max(10_000).default(50),
+  AUTOPILOT_MAX_AUTONOMY: z.coerce.number().int().min(0).max(3).default(3),
+  AUTOPILOT_RETURN_GRACE_HOURS: z.coerce.number().min(0).max(24 * 14).default(48),
+  AUTOPILOT_MAX_APPROVAL_DAYS: z.coerce.number().positive().max(90).default(14),
+  AUTOPILOT_MAX_USD_PER_HOUR: z.coerce.number().positive().max(10_000).default(10),
 });
 
 export interface ServerConfig {
@@ -83,6 +92,8 @@ export interface ServerConfig {
   migrationsDir: string | null;
   /** auto = LISTEN/NOTIFY fan-out on PostgreSQL, in-process bus on PGlite (ADR-024). */
   eventFanout: 'auto' | 'off';
+  /** Autopilot / away mode bounds (ADR-034). */
+  autopilot: AutopilotLimits;
 }
 
 export function loadConfig(
@@ -145,5 +156,15 @@ export function loadConfig(
     approvalTtlMs: parsed.APPROVAL_TTL_HOURS * 60 * 60 * 1000,
     migrationsDir: parsed.MIGRATIONS_DIR,
     eventFanout: parsed.EVENT_FANOUT,
+    autopilot: {
+      // Unattended work is an explicit opt-in in production; development and the demo can start sessions right away.
+      enabled: parsed.AUTOPILOT_ENABLED === undefined ? !production : parsed.AUTOPILOT_ENABLED === 'true' || parsed.AUTOPILOT_ENABLED === '1',
+      maxHours: parsed.AUTOPILOT_MAX_HOURS,
+      maxBudgetUsd: parsed.AUTOPILOT_MAX_BUDGET_USD,
+      maxAutonomy: parsed.AUTOPILOT_MAX_AUTONOMY as AutopilotLimits['maxAutonomy'],
+      returnGraceMs: parsed.AUTOPILOT_RETURN_GRACE_HOURS * 60 * 60 * 1000,
+      maxApprovalLifetimeMs: parsed.AUTOPILOT_MAX_APPROVAL_DAYS * 24 * 60 * 60 * 1000,
+      maxUsdPerHour: parsed.AUTOPILOT_MAX_USD_PER_HOUR,
+    },
   };
 }

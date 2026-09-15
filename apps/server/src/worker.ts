@@ -58,6 +58,9 @@ export class WorkerPool {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      // Autopilot stop conditions first, so a session that just ran out of time or budget starts nothing new.
+      const autopilot = await this.container.autopilot.tick();
+      if (autopilot.stopped > 0 || autopilot.killed > 0) this.log.info(autopilot, 'autopilot sessions ended');
       const result = await this.container.orchestrator.tick();
       if (result.started.length > 0 || result.recovered > 0) this.log.info(result, 'scheduler tick');
       await this.container.admin.sessions.deleteExpired(this.container.clock.now());

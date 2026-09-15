@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AgentRuntime,
+  AutopilotService,
   DEFAULT_MODEL_CONFIGS,
   EventBus,
   ModelRegistry,
@@ -10,6 +11,7 @@ import {
   RepoIndexer,
   RoomEventProjector,
   RoomService,
+  sessionBudgetScope,
   systemClock,
   withRoomProjection,
   unavailableSandbox,
@@ -30,6 +32,7 @@ import {
   createDatabase,
   createHealthRepositories,
   createRepositories,
+  DrizzleAutopilotSessionRepository,
   PgJobQueue,
   type AdminRepositories,
   type DatabaseHandle,
@@ -67,6 +70,9 @@ export interface Container {
   intelligence: Intelligence;
   /** Project Room (ADR-030): typed conversation messages; orchestrator events are projected into it. */
   room: RoomService;
+  /** Autopilot / away mode sessions (ADR-034). */
+  autopilot: AutopilotService;
+  autopilotSessions: DrizzleAutopilotSessionRepository;
   github: GitHubPort;
   githubKind: 'octokit' | 'in-memory';
   sandbox: SandboxPort;
@@ -158,6 +164,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
   const repos = createRepositories(db.db);
   const admin = createAdminRepositories(db.db);
   const health = createHealthRepositories(db.db);
+  const autopilotSessions = new DrizzleAutopilotSessionRepository(db.db);
   await admin.models.seedDefaults(DEFAULT_MODEL_CONFIGS);
 
   const metrics = createServerMetrics();
@@ -226,15 +233,18 @@ export async function createContainer(config: ServerConfig, overrides: Container
     addProjectUsage: (projectId, costUsd, tokens) => repos.projects.addUsage(projectId, costUsd, tokens),
     addTaskUsage: (taskId, costUsd, tokens) => repos.tasks.addUsage(taskId, costUsd, tokens),
     events,
-    budgetScopes: async ({ projectId, taskId }: AgentScope): Promise<BudgetScope[]> => {
-      const [spentToday, project, task] = await Promise.all([
+    budgetScopes: async ({ projectId, taskId, runId }: AgentScope): Promise<BudgetScope[]> => {
+      const [spentToday, project, task, session] = await Promise.all([
         repos.usage.totalCostSince(startOfDay()),
         repos.projects.get(projectId),
         taskId ? repos.tasks.get(taskId) : Promise.resolve(null),
+        // Runs of an active autopilot session also spend from the session budget (ADR-034).
+        sessionBudgetScope({ sessions: autopilotSessions, runs: repos.runs }, runId, clock.now()),
       ]);
       const scopes: BudgetScope[] = [{ scope: 'global', limitUsd: settings.globalDailyBudgetUsd > 0 ? settings.globalDailyBudgetUsd : null, spentUsd: spentToday }];
       if (project) scopes.push({ scope: 'project', limitUsd: project.budgetUsd > 0 ? project.budgetUsd : null, spentUsd: project.spentUsd });
       if (task) scopes.push({ scope: 'task', limitUsd: task.maxCost, spentUsd: task.costUsd });
+      if (session) scopes.push(session);
       return scopes;
     },
     globalRoleOverrides: () => settings.modelOverrides,
@@ -260,14 +270,28 @@ export async function createContainer(config: ServerConfig, overrides: Container
         actorId: entry.agentRole,
         action: `tool.${entry.tool}.${entry.outcome}`,
         target: entry.projectId,
-        details: { taskId: entry.taskId, runId: entry.runId, reason: entry.reason ?? null, durationMs: entry.durationMs, costUsd: entry.costUsd },
+        // sessionId: security denials of a session's tool calls count towards its kill condition (ADR-034).
+        details: { taskId: entry.taskId, runId: entry.runId, sessionId: entry.sessionId ?? null, reason: entry.reason ?? null, durationMs: entry.durationMs, costUsd: entry.costUsd },
       }),
     globalBudgetExhausted: async () =>
       settings.globalDailyBudgetUsd > 0 && (await repos.usage.totalCostSince(startOfDay())) >= settings.globalDailyBudgetUsd,
-    options: { globalCapacity: settings.globalCapacity },
+    autopilotSessions,
+    audit: (entry) => admin.audit.record(entry),
+    options: { globalCapacity: settings.globalCapacity, approvalTtlMs: config.approvalTtlMs, autopilot: config.autopilot },
   });
 
   const intelligence = createIntelligence({ repos, admin, health, events, queue, clock, runtime, github, repoIndex });
+  const autopilot = new AutopilotService({
+    sessions: autopilotSessions,
+    projects: repos.projects,
+    runs: repos.runs,
+    events,
+    clock,
+    limits: () => config.autopilot,
+    pauseRun: (runId, reason) => orchestrator.pause(runId, reason),
+    audit: (entry) => admin.audit.record(entry),
+    demoMode: () => !usableRealModel(),
+  });
 
   return {
     config,
@@ -284,6 +308,8 @@ export async function createContainer(config: ServerConfig, overrides: Container
     orchestrator,
     intelligence,
     room,
+    autopilot,
+    autopilotSessions,
     github,
     githubKind,
     sandbox,

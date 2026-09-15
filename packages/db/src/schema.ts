@@ -19,8 +19,13 @@ import type {
   AgentRole,
   AgentRunStatus,
   ApprovalAction,
+  ApprovalMode,
   ApprovalStatus,
   AutonomyLevel,
+  AutopilotSessionStatus,
+  AutopilotStopPolicy,
+  AutopilotStopReason,
+  QuietHours,
   Complexity,
   ConsultedAgent,
   ConversationKind,
@@ -182,6 +187,61 @@ export const tasks = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Autopilot / away mode (docs/plans/autopilot.md, stage 1)
+// ---------------------------------------------------------------------------
+
+export const autopilotSessions = pgTable(
+  'autopilot_sessions',
+  {
+    id: text('id').primaryKey(),
+    /** User id of the starter (or "system"). */
+    startedBy: text('started_by').notNull(),
+    status: text('status').$type<AutopilotSessionStatus>().notNull().default('active'),
+    /** Projects in scope; authoritative membership (and the one-active-session rule) is in autopilot_session_projects. */
+    projectIds: jsonb('project_ids').$type<string[]>().notNull(),
+    startsAt: ts('starts_at').notNull(),
+    endsAt: ts('ends_at').notNull(),
+    budgetUsd: doublePrecision('budget_usd').notNull(),
+    /** Ceiling chosen at start. The effective autonomy is computed per call and never persisted. */
+    autonomyCeiling: integer('autonomy_ceiling').$type<AutonomyLevel>().notNull(),
+    maxTaskRisk: text('max_task_risk').$type<'low' | 'medium'>().notNull(),
+    maxConcurrentRuns: integer('max_concurrent_runs'),
+    maxParkedRuns: integer('max_parked_runs').notNull().default(3),
+    quietHours: jsonb('quiet_hours').$type<QuietHours>(),
+    stopPolicy: jsonb('stop_policy').$type<AutopilotStopPolicy>().notNull(),
+    demo: boolean('demo').notNull().default(false),
+    stopReason: text('stop_reason').$type<AutopilotStopReason>(),
+    stopDetail: text('stop_detail'),
+    stoppedBy: text('stopped_by'),
+    endedAt: ts('ended_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('autopilot_sessions_status_idx').on(t.status, t.createdAt)],
+);
+
+export const autopilotSessionProjects = pgTable(
+  'autopilot_session_projects',
+  {
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => autopilotSessions.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    status: text('status').$type<'active' | 'ended'>().notNull().default('active'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sessionId, t.projectId] }),
+    // At most one active session per project, atomically across requests and processes.
+    uniqueIndex('autopilot_session_projects_active_uq')
+      .on(t.projectId)
+      .where(sql`status = 'active'`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Pipeline execution
 // ---------------------------------------------------------------------------
 
@@ -199,6 +259,8 @@ export const pipelineRuns = pgTable(
     currentStage: text('current_stage').$type<RunStage>(),
     stagePlan: jsonb('stage_plan').$type<StagePlanItem[]>().notNull(),
     stageStates: jsonb('stage_states').$type<Partial<Record<RunStage, StageState>>>().notNull().default(emptyObject),
+    /** Autopilot session that started the run (null: started by a human or outside a session). */
+    sessionId: text('session_id').references(() => autopilotSessions.id, { onDelete: 'set null' }),
     iterations: integer('iterations').notNull().default(0),
     debugAttempts: integer('debug_attempts').notNull().default(0),
     costUsd: doublePrecision('cost_usd').notNull().default(0),
@@ -217,6 +279,7 @@ export const pipelineRuns = pgTable(
     index('runs_project_status_idx').on(t.projectId, t.status),
     index('runs_task_idx').on(t.taskId),
     index('runs_status_idx').on(t.status),
+    index('runs_session_idx').on(t.sessionId),
   ],
 );
 
@@ -323,8 +386,17 @@ export const approvals = pgTable(
     decidedBy: text('decided_by'),
     decidedAt: ts('decided_at'),
     comment: text('comment'),
+    /** blocking: the run waits in WAITING; deferred: requested in an autopilot session, the run is PARKED. */
+    mode: text('mode').$type<ApprovalMode>().notNull().default('blocking'),
+    sessionId: text('session_id').references(() => autopilotSessions.id, { onDelete: 'set null' }),
+    /** Explicit expiry (deferred approvals). null: requested_at + APPROVAL_TTL_HOURS (ADR-023). */
+    expiresAt: ts('expires_at'),
   },
-  (t) => [index('approvals_status_idx').on(t.status), index('approvals_project_status_idx').on(t.projectId, t.status)],
+  (t) => [
+    index('approvals_status_idx').on(t.status),
+    index('approvals_project_status_idx').on(t.projectId, t.status),
+    index('approvals_session_idx').on(t.sessionId),
+  ],
 );
 
 // ---------------------------------------------------------------------------

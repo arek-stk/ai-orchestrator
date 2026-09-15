@@ -22,6 +22,9 @@ const app = await buildApp(container, { logger: true });
 let workers: WorkerPool | null = null;
 if (config.role !== 'worker') await app.listen({ port: config.port, host: config.host });
 if (config.role !== 'api') {
+  // Restart recovery: sessions resume from the database; effective autonomy is never persisted, so nothing to repair.
+  const recovered = await container.autopilot.recover();
+  if (recovered.resumed > 0 || recovered.stopped > 0) app.log.info(recovered, 'autopilot sessions recovered');
   workers = new WorkerPool(container, { concurrency: config.workerConcurrency, schedulerIntervalMs: config.schedulerIntervalMs, log: app.log });
   workers.start();
 }

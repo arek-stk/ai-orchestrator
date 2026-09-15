@@ -1,4 +1,4 @@
-import { and, desc, asc, eq, gte, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, asc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import {
   ConcurrentModificationError,
   emptyCheckpoint,
@@ -230,6 +230,7 @@ export class DrizzleRunRepository implements RunRepository {
         stagePlan: run.stagePlan,
         limits: run.limits,
         checkpoint: emptyCheckpoint(),
+        sessionId: run.sessionId ?? null,
       })
       .returning();
     return toRun(row!);
@@ -244,6 +245,7 @@ export class DrizzleRunRepository implements RunRepository {
     const conditions: SQL[] = [];
     if (filter.projectId) conditions.push(eq(t.pipelineRuns.projectId, filter.projectId));
     if (filter.taskId) conditions.push(eq(t.pipelineRuns.taskId, filter.taskId));
+    if (filter.sessionId) conditions.push(eq(t.pipelineRuns.sessionId, filter.sessionId));
     if (filter.statuses && filter.statuses.length > 0) conditions.push(inArray(t.pipelineRuns.status, [...filter.statuses]));
     const rows = await this.db
       .select()
@@ -262,6 +264,8 @@ export class DrizzleRunRepository implements RunRepository {
         currentStage: run.currentStage,
         stagePlan: run.stagePlan,
         stageStates: run.stageStates,
+        // A human resume detaches a run from an ended session.
+        sessionId: run.sessionId,
         iterations: run.iterations,
         debugAttempts: run.debugAttempts,
         costUsd: run.costUsd,
@@ -468,10 +472,11 @@ export class DrizzleApprovalRepository implements ApprovalRepository {
     return row ? toApproval(row) : null;
   }
 
-  async list(filter: { projectId?: string; status?: ApprovalStatus; limit?: number }): Promise<Approval[]> {
+  async list(filter: { projectId?: string; status?: ApprovalStatus; sessionId?: string; limit?: number }): Promise<Approval[]> {
     const conditions: SQL[] = [];
     if (filter.projectId) conditions.push(eq(t.approvals.projectId, filter.projectId));
     if (filter.status) conditions.push(eq(t.approvals.status, filter.status));
+    if (filter.sessionId) conditions.push(eq(t.approvals.sessionId, filter.sessionId));
     const rows = await this.db
       .select()
       .from(t.approvals)
@@ -481,12 +486,24 @@ export class DrizzleApprovalRepository implements ApprovalRepository {
     return rows.map(toApproval);
   }
 
-  /** Oldest pending approvals requested before `before` (approval expiry, ADR-023). */
-  async listPendingBefore(before: Date, limit: number): Promise<Approval[]> {
+  /**
+   * Oldest pending approvals that are due to expire at `now` (ADR-023, refined by ADR-034): an explicit `expires_at`
+   * (deferred autopilot approvals) wins; otherwise the approval expires `ttlMs` after it was requested.
+   */
+  async listDue(now: Date, ttlMs: number, limit: number): Promise<Approval[]> {
+    const requestedBefore = new Date(now.getTime() - ttlMs);
     const rows = await this.db
       .select()
       .from(t.approvals)
-      .where(and(eq(t.approvals.status, 'pending'), sql`${t.approvals.requestedAt} <= ${before}`))
+      .where(
+        and(
+          eq(t.approvals.status, 'pending'),
+          or(
+            and(isNotNull(t.approvals.expiresAt), lte(t.approvals.expiresAt, now)),
+            and(isNull(t.approvals.expiresAt), lte(t.approvals.requestedAt, requestedBefore)),
+          ),
+        ),
+      )
       .orderBy(asc(t.approvals.requestedAt))
       .limit(limit);
     return rows.map(toApproval);
