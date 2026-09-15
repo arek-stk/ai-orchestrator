@@ -28,7 +28,7 @@ export function isConnected(connection: AIConnection | undefined): boolean {
   return connection?.status === 'connected';
 }
 
-/** "Vom Orchestrator verwendbar": supported integration, connected, and the service confirmed routable models. */
+/** Orchestrator status "Nutzbar": supported integration, connected, and the service confirmed routable models. */
 export function isOrchestratorUsable(tool: AITool, connection: AIConnection | undefined): boolean {
   return supportsOrchestrator(tool) && isConnected(connection) && connection?.orchestratorEnabled === true;
 }

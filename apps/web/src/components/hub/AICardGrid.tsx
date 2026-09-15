@@ -22,7 +22,7 @@ export function AICardGrid({
 }) {
   return (
     <div className="@container">
-      <ul ref={listRef} aria-label="KI-Tools" className="grid grid-cols-1 gap-4 @xl:grid-cols-2 @3xl:grid-cols-3 @5xl:grid-cols-4">
+      <ul ref={listRef} aria-label="KI-Tools" className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @xl:gap-4 @3xl:grid-cols-3 @5xl:grid-cols-4">
         {tools.map((tool) => (
           <li key={tool.id} className="min-w-0">
             <AICard tool={tool} connection={connections.get(tool.id)} selected={tool.id === selectedId} showDisconnect={canDisconnect(tool)} {...handlers} />

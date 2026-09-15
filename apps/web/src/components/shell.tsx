@@ -135,10 +135,17 @@ function NavList({ items, pathname, mode, onNavigate }: { items: NavItem[]; path
             <span className={cx('flex-1 truncate', responsive && 'sr-only lg:not-sr-only')}>{item.label}</span>
             {item.tag ? (
               <>
-                <span className={cx('inline-flex h-[18px] items-center rounded-full bg-accent-strong px-1.5 text-[10.5px] font-semibold leading-none text-white', responsive && 'sr-only lg:not-sr-only')}>
+                {/* Same look as the "Neu" badge next to the AI Hub page title (hub/primitives.tsx NEW_BADGE_CLASS).
+                    Toggled with hidden/inline-flex: `not-sr-only` would reset the badge's padding and height. */}
+                <span className={cx('h-5 shrink-0 items-center rounded-full bg-hub-cta px-2 text-[11px] font-semibold leading-none text-white', responsive ? 'hidden lg:inline-flex' : 'inline-flex')}>
                   {item.tag}
                 </span>
-                {responsive ? <span aria-hidden="true" className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-accent-strong lg:hidden" /> : null}
+                {responsive ? (
+                  <>
+                    <span className="sr-only lg:hidden">{item.tag}</span>
+                    <span aria-hidden="true" className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-hub-cta lg:hidden" />
+                  </>
+                ) : null}
               </>
             ) : null}
             {item.badge ? (

@@ -211,7 +211,7 @@ in `lib/hub/filter.ts`, shareable view state in `lib/hub/url-state.ts`, the stat
   `?source=live|demo` switches explicitly.
 * **Honesty rules** (unit tested): `native` only for OpenAI, Anthropic and Google; `openai-compatible` only where the
   vendor documents an OpenAI-compatible chat endpoint; everything else is `planned` or `no-public-api` and cannot be
-  connected. "Vom Orchestrator verwendbar" requires a supported integration, a connection and a routable model. Usage
+  connected. The orchestrator status "Nutzbar" requires a supported integration, a connection and a routable model. Usage
   bars show ledger data or "Noch keine Nutzungsdaten"; model lists come from the registry or are labelled "Beispiele";
   pricing is non-numeric.
 * **Logos:** single-colour SVGs from a pinned Simple Icons release, sanitised by `apps/web/scripts/sanitize-svg.mjs`

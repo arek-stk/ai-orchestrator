@@ -1,5 +1,7 @@
 // How a tool's connection and orchestrator state is described in the UI. Kept pure so the honesty rules are tested:
-// "Vom Orchestrator verwendbar" only for connected native/OpenAI-compatible tools with routable models.
+// "Nutzbar" only for connected native/OpenAI-compatible tools with routable models. The values follow an
+// "Orchestrator ·" label on cards and must fit one line at the narrowest desktop card (about 116px at 12px);
+// the detail panel carries the longer explanations.
 
 import { isOrchestratorUsable, supportsOrchestrator } from './filter';
 import type { AIConnection, AITool } from './types';
@@ -28,12 +30,12 @@ export function connectionBadge(tool: AITool, connection: AIConnection | undefin
 }
 
 export function orchestratorState(tool: AITool, connection: AIConnection | undefined): StateLabel {
-  if (tool.integration === 'no-public-api') return { tone: 'muted', label: tool.api === 'limited' ? 'Keine offene API für den Orchestrator' : 'Kein offizieller API-Zugang' };
+  if (tool.integration === 'no-public-api') return { tone: 'muted', label: 'Keine offene API' };
   if (tool.integration === 'planned') return { tone: 'muted', label: 'Integration geplant' };
-  if (isOrchestratorUsable(tool, connection)) return { tone: 'good', label: 'Vom Orchestrator verwendbar' };
-  if (connection?.status === 'connected') return { tone: 'warning', label: 'Verbunden, noch kein nutzbares Modell' };
+  if (isOrchestratorUsable(tool, connection)) return { tone: 'good', label: 'Nutzbar' };
+  if (connection?.status === 'connected') return { tone: 'warning', label: 'Kein Modell' };
   if (connection?.status === 'error') return { tone: 'critical', label: 'Zugang prüfen' };
-  return { tone: 'muted', label: 'Nach Verbindung nutzbar' };
+  return { tone: 'muted', label: 'Verbindbar' };
 }
 
 export type PrimaryAction = 'manage' | 'connect' | 'details' | 'learn';

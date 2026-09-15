@@ -85,8 +85,8 @@ export function FilterPopover({ filters, onChange }: { filters: HubFilters; onCh
               <label className={rowClass}>
                 <input type="checkbox" className={controlClass} checked={filters.orchestratorOnly} onChange={(event) => onChange({ ...filters, orchestratorOnly: event.target.checked })} />
                 <span>
-                  Im Orchestrator nutzbar
-                  <span className="block text-xs text-ink-2">Native oder OpenAI-kompatible Integration</span>
+                  Orchestrator-Integration
+                  <span className="block text-xs text-ink-2">Nativ oder OpenAI-kompatibel</span>
                 </span>
               </label>
               <label className={rowClass}>

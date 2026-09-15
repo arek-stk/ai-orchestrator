@@ -42,6 +42,10 @@ describe('catalog invariants', () => {
         expect((SUBCATEGORIES[category] as Record<string, string>)[sub]).toBeDefined();
       }
       expect(tool.pricing).not.toMatch(/\d/);
+      // A tool listed under Audio or Video must say which concrete kind (e.g. Groq: speech-to-text via Whisper).
+      for (const category of ['audio', 'video'] as const) {
+        if (tool.categories.includes(category)) expect(tool.subcategories.some((key) => key.startsWith(`${category}:`)), `${tool.id} ${category}`).toBe(true);
+      }
       expect(tool.capabilities.length).toBeGreaterThanOrEqual(2);
       expect(tool.tags.length).toBeGreaterThanOrEqual(2);
     }
@@ -66,12 +70,23 @@ describe('presentation honesty rules', () => {
   const midjourney = HUB_CATALOG.find((tool) => tool.id === 'midjourney')!;
   const base: AIConnection = { toolId: 'claude', status: 'connected', connectedAt: null, selectedModel: null, orchestratorEnabled: true };
 
-  it('says "Vom Orchestrator verwendbar" only for connected, routable native or compatible tools', () => {
-    expect(orchestratorState(claude, base).label).toBe('Vom Orchestrator verwendbar');
-    expect(orchestratorState(claude, { ...base, orchestratorEnabled: false }).label).not.toBe('Vom Orchestrator verwendbar');
-    expect(orchestratorState(claude, undefined).label).toBe('Nach Verbindung nutzbar');
+  it('says "Nutzbar" only for connected, routable native or compatible tools', () => {
+    expect(orchestratorState(claude, base)).toEqual({ tone: 'good', label: 'Nutzbar' });
+    expect(orchestratorState(claude, { ...base, orchestratorEnabled: false }).label).toBe('Kein Modell');
+    expect(orchestratorState(claude, { ...base, status: 'error' }).label).toBe('Zugang prüfen');
+    expect(orchestratorState(claude, undefined).label).toBe('Verbindbar');
+    for (const tool of HUB_CATALOG.filter((t) => t.integration === 'planned' || t.integration === 'no-public-api')) {
+      expect(orchestratorState(tool, { ...base, toolId: tool.id }).label).not.toBe('Nutzbar');
+    }
     expect(orchestratorState(runway, { ...base, toolId: 'runway' }).label).toBe('Integration geplant');
-    expect(orchestratorState(midjourney, undefined).label).toBe('Kein offizieller API-Zugang');
+    expect(orchestratorState(midjourney, undefined).label).toBe('Keine offene API');
+  });
+
+  it('keeps card status phrases short enough for one line', () => {
+    const connection = (patch: Partial<AIConnection>): AIConnection => ({ ...base, ...patch });
+    const labels = HUB_CATALOG.flatMap((tool) => [undefined, connection({ toolId: tool.id }), connection({ toolId: tool.id, orchestratorEnabled: false }), connection({ toolId: tool.id, status: 'error' })].map((c) => orchestratorState(tool, c).label));
+    // 19 characters ("Integration geplant") measured 106px of the 116px available on a 250px desktop card.
+    for (const label of new Set(labels)) expect(label.length, label).toBeLessThanOrEqual(19);
   });
 
   it('offers connect only where the orchestrator can use the tool', () => {

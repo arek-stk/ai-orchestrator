@@ -336,10 +336,17 @@ p {
   display: none;
 }
 
-@media (max-width: 639px) {
-  .hub-scroll-x {
-    mask-image: linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 28px), transparent 100%);
-  }
+/* Scroll rows fade only toward the side with hidden content (data attributes set by CategoryFilter). */
+.hub-scroll-x[data-fade-start] {
+  mask-image: linear-gradient(90deg, transparent 0, #000 32px);
+}
+
+.hub-scroll-x[data-fade-end] {
+  mask-image: linear-gradient(90deg, #000 calc(100% - 32px), transparent 100%);
+}
+
+.hub-scroll-x[data-fade-start][data-fade-end] {
+  mask-image: linear-gradient(90deg, transparent 0, #000 32px, #000 calc(100% - 32px), transparent 100%);
 }
 
 @keyframes hub-slide-in {

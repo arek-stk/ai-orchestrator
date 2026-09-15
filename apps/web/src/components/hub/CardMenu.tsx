@@ -96,7 +96,7 @@ export function CardMenu({
         onClick={() => (open ? close(false) : openAt(0))}
         onKeyDown={onButtonKey}
         className={cx(
-          "relative -mr-1.5 -mt-1 inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-2 transition-[color,background-color] duration-150 ease-out after:absolute after:-inset-1 after:content-[''] hover:bg-hub-card-2 hover:text-ink",
+          "relative -mr-1.5 -mt-1 inline-flex h-8 w-8 items-center pointer-coarse:h-9 pointer-coarse:w-9 justify-center rounded-lg text-ink-2 transition-[color,background-color] duration-150 ease-out after:absolute after:-inset-1 after:content-[''] hover:bg-hub-card-2 hover:text-ink",
           open && 'bg-hub-card-2 text-ink',
         )}
       >

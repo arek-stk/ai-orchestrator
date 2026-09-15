@@ -57,10 +57,14 @@ function isLight(hex: string): boolean {
  * Tool logo tile. Vendored brand SVGs render through <img> on a fixed tile colour (never inlined, so an SVG cannot
  * run script); tools without a licensed logo get a neutral monogram or icon on a gradient of their accent colour.
  */
-export function LogoTile({ logo, name, size = 'md', className }: { logo: ToolLogo; name: string; size?: keyof typeof SIZES; className?: string }) {
+export function LogoTile({ logo, name, size = 'md', className }: { logo: ToolLogo; name: string; size?: keyof typeof SIZES | 'card'; className?: string }) {
   const [failed, setFailed] = useState(false);
-  const s = SIZES[size];
-  const base: CSSProperties = { width: s.box, height: s.box, borderRadius: s.radius };
+  // `card` sizes from the --hub-tile custom property, so container queries can change it without JS.
+  const fluid = size === 'card';
+  const s = SIZES[fluid ? 'md' : size];
+  const base: CSSProperties = fluid
+    ? { width: 'var(--hub-tile)', height: 'var(--hub-tile)', borderRadius: 'calc(var(--hub-tile) * 0.27)' }
+    : { width: s.box, height: s.box, borderRadius: s.radius };
 
   if (logo.kind === 'image' && !failed) {
     const light = isLight(logo.bg);
@@ -70,7 +74,7 @@ export function LogoTile({ logo, name, size = 'md', className }: { logo: ToolLog
         style={{ ...base, background: logo.bg, boxShadow: light ? 'inset 0 0 0 1px rgba(15, 17, 30, 0.1)' : 'inset 0 0 0 1px rgba(255, 255, 255, 0.09)' }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element -- static, sanitised SVG; next/image adds nothing here */}
-        <img src={logo.src} alt={`${name} Logo`} width={s.box - s.pad * 2} height={s.box - s.pad * 2} decoding="async" draggable={false} onError={() => setFailed(true)} />
+        <img src={logo.src} alt={`${name} Logo`} width={s.box - s.pad * 2} height={s.box - s.pad * 2} decoding="async" draggable={false} onError={() => setFailed(true)} className={fluid ? 'h-[60%] w-[60%]' : undefined} />
       </span>
     );
   }
@@ -85,7 +89,7 @@ export function LogoTile({ logo, name, size = 'md', className }: { logo: ToolLog
       className={cx('relative inline-flex shrink-0 select-none items-center justify-center font-semibold tracking-[-0.02em] text-white', className)}
       style={{
         ...base,
-        fontSize: s.text,
+        fontSize: fluid ? 'calc(var(--hub-tile) * 0.34)' : s.text,
         background: `linear-gradient(150deg, color-mix(in oklab, ${accent} 80%, white) 0%, ${accent} 52%, color-mix(in oklab, ${accent} 72%, black) 100%)`,
         boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 0 0 1px rgba(255, 255, 255, 0.08)',
       }}
@@ -102,6 +106,9 @@ const PILL_TONE: Record<HubTone, { wrap: string; dot: string }> = {
   accent: { wrap: 'bg-accent-soft text-ink', dot: 'bg-accent' },
   muted: { wrap: 'bg-hub-card-2 text-ink-2 border border-hub-line', dot: 'bg-muted' },
 };
+
+/** The "Neu" badge; the sidebar nav item in shell.tsx uses the same classes. */
+export const NEW_BADGE_CLASS = 'inline-flex h-5 shrink-0 items-center rounded-full bg-hub-cta px-2 text-[11px] font-semibold leading-none text-white';
 
 /** Status label: dot + text, never colour alone. */
 export function StatePill({ tone, label, className }: { tone: HubTone; label: string; className?: string }) {

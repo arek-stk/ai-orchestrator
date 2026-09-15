@@ -95,27 +95,33 @@ export function NetworkVisual({ className }: { className?: string }) {
 export function HubHero({ total, connected, usable, loading }: { total: number; connected: number; usable: number; loading: boolean }) {
   const headingId = useId();
   const stats = [
-    { label: 'KI-Tools im Katalog', value: total },
-    { label: 'Verbunden', value: connected },
-    { label: 'Im Orchestrator nutzbar', value: usable },
+    { short: 'Im Katalog', label: 'KI-Tools im Katalog', value: total },
+    { short: 'Verbunden', label: 'Verbunden', value: connected },
+    { short: 'Nutzbar', label: 'Im Orchestrator nutzbar', value: usable },
   ];
   return (
     <section aria-labelledby={headingId} className="hub-hero @container relative overflow-hidden rounded-3xl border border-hub-line">
-      <div className="relative grid items-center gap-2 px-5 py-6 @lg:px-8 @lg:py-8 @3xl:grid-cols-[minmax(0,1fr)_300px] @5xl:grid-cols-[minmax(0,1fr)_400px]">
+      <div className="relative grid items-center gap-2 px-5 py-5 @lg:px-8 @lg:py-8 @3xl:grid-cols-[minmax(0,1fr)_300px] @5xl:grid-cols-[minmax(0,1fr)_400px]">
         <div className="min-w-0">
-          <h2 id={headingId} className="text-[26px] font-semibold leading-[1.12] tracking-[-0.025em] text-ink @lg:text-[30px] @5xl:text-[34px]">
+          <h2 id={headingId} className="text-[21px] font-semibold leading-[1.15] tracking-[-0.02em] text-ink @lg:text-[30px] @lg:tracking-[-0.025em] @5xl:text-[34px]">
             Eine Plattform.
             <br />
             <span className="hub-heading-gradient @lg:whitespace-nowrap">Unendliche KI-Möglichkeiten.</span>
           </h2>
-          <p className="mt-3 max-w-[48ch] text-[14px] leading-relaxed text-ink-2 sm:text-[15px]">
+          <p className="mt-2 max-w-[48ch] text-[13.5px] leading-normal text-ink-2 @lg:mt-3 @lg:text-[15px] @lg:leading-relaxed">
             Verbinde deine bevorzugten KI-Modelle und Tools mit deinem Orchestrator und lass sie gemeinsam für dich arbeiten.
           </p>
-          <dl className="mt-6 flex flex-wrap gap-x-7 gap-y-3">
+          {/* Phones: one row of three stats with short labels (full labels stay available to screen readers). */}
+          <dl className="mt-4 grid grid-cols-3 gap-3 @lg:mt-6 @lg:flex @lg:flex-wrap @lg:gap-x-7 @lg:gap-y-3">
             {stats.map((stat) => (
               <div key={stat.label} className="min-w-0">
-                <dt className="text-xs text-ink-2">{stat.label}</dt>
-                <dd className="tabular mt-0.5 text-[22px] font-semibold leading-7 tracking-[-0.01em] text-ink">
+                <dt className="truncate text-xs text-ink-2">
+                  <span aria-hidden="true" className="@lg:hidden">
+                    {stat.short}
+                  </span>
+                  <span className="sr-only @lg:not-sr-only">{stat.label}</span>
+                </dt>
+                <dd className="tabular mt-0.5 text-[19px] font-semibold leading-7 tracking-[-0.01em] text-ink @lg:text-[22px]">
                   {loading ? <Skeleton className="mt-1 h-6 w-10" /> : formatCountDe(stat.value)}
                 </dd>
               </div>
