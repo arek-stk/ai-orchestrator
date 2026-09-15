@@ -143,6 +143,49 @@ Format: context → decision → consequences → status.
   `REPO_GUARDIAN_TOKEN` (read-only "Secret scanning alerts" and "Administration") or are reported as "not checked".
   Like the AI workflows, the guardian is advisory: it reports and never merges, reverts or changes settings.
 * **Status:** Accepted (2026-09-14)
+* **Addendum (2026-09-14) — milestones drive releases:**
+  * Roadmap milestones are named `vX.Y — <theme>`; `Backlog — proposed` is never released. When the lowest open
+    `vX.Y` milestone has no open and at least one closed item, `milestone-release.yml` targets `X.Y.0`: the
+    release-please PR must be retargeted with a `Release-As: X.Y.0` commit if it has another version. After the
+    release is published it appends the milestone link to the notes, comments on the release PR and closes the
+    milestone. How much the bot does itself depends on the mode (repository variables; only the exact value `true`
+    counts, anything else is unset):
+  * **Safe mode (default, no variable):** comments only. The workflow posts a one-time "ready to merge" comment on the
+    release PR, or a one-time comment with the commands for a maintainer-made Release-As PR, then annotates release
+    notes and closes the milestone. It opens no pull requests, dispatches no CI for bot PRs and never enables
+    auto-merge; a maintainer approves the pending workflow runs of the release PR (or runs CI on its branch) and merges.
+    Needs no repository setting beyond what release-please already needs.
+  * **Prepare mode (`AUTO_RELEASE_PREPARE=true`):** additionally opens the Release-As bot PR and dispatches CI for bot
+    PRs; a maintainer still merges. Needs "Allow GitHub Actions to create and approve pull requests" (also required by
+    release-please itself).
+  * **Full mode (`AUTO_RELEASE_MERGE=true`, implies prepare):** additionally enables squash auto-merge on the
+    Release-As and release PRs (or merges through the REST API when the PR is already mergeable). Needs "Allow
+    auto-merge" and the required `Typecheck and test` check on `main`, otherwise auto-merge would not wait for CI.
+  * Trade-off, the reason the owner put this on hold: dispatching CI for bot PRs sidesteps the `action_required`
+    approval of their `pull_request` runs, and in full mode the bot creates and merges PRs into `main`, which has no
+    required reviews and does not enforce admins, so release commits would land without any human. Safe mode keeps a
+    human in both places; enable prepare or full mode only deliberately, preferably after adding required reviews or
+    moving the automation to a dedicated GitHub App whose merges are reviewed. The dispatch cannot run code from
+    outsiders: only bot-authored PRs from this repository on `release-please--*` / `release-as/*` branches qualify, and
+    pushing to those branches already requires write access.
+  * Bot PRs get CI without a personal token (prepare and full mode): their `pull_request` runs wait for approval, so
+    the workflow dispatches `ci.yml` (`workflow_dispatch` is exempt from the GITHUB_TOKEN trigger rule) once per head
+    commit, re-reading the branch tip right before dispatching and counting only check runs for that head SHA. In every
+    mode it dispatches the default branch's own release-please workflow when a bot merge left the head unprocessed. A
+    PAT or GitHub App token was rejected as a standing credential with write access.
+  * Safety: decisions live in the pure, unit-tested `.github/scripts/milestone-release/logic.mjs`. Issue and PR events
+    start the write-capable job only when a milestone is involved (or `release:hold` was added) and the actor has
+    write, maintain or admin permission, checked by a read-only job that fails closed (bot or invalid logins, missing
+    records and API errors count as no access). Schedule, manual and milestone events are trusted. Only bot-authored
+    PRs from this repository are ever auto-merged; auto-merge enabled by a human is never withdrawn; a merged or closed
+    Release-As PR is never recreated; the IO shell refuses auto-merge outside full mode and PR creation or CI dispatch
+    in safe mode even if a plan asked for it. Pause everything with `AUTO_RELEASE=false` or the `release:hold` label on
+    the release PR: nothing is dispatched, created, merged, annotated or closed, and milestone assignment stops; only
+    auto-merge this workflow enabled is withdrawn. Variable changes take effect on the next run, so disable an
+    in-flight auto-merge by hand if it must stop immediately. PRs get a milestone only from a `milestone:vX.Y` label
+    or a closing reference to an issue in that milestone.
+  * Latency: bot merges and releases trigger no workflows, so the two-hourly schedule is the fallback; finishing a
+    release (milestone close, notes) can take up to ~2 hours.
 
 ## ADR-020 — Production build: esbuild bundle, container image and compose stack
 * **Context:** ADR-001 bundles the server for production, but no bundle, image or deployment description existed.
@@ -232,6 +275,43 @@ Format: context → decision → consequences → status.
   current schema owner's `0001`. Implementation plan: `docs/plans/project-room.md`.
 * **Status:** Accepted (2026-09-14), implementation after the running module PRs are merged
 
+### ADR-030 addendum — one conversation model, stage 1 scope (2026-09-15)
+* **Context:** ADR-030 planned a `room_messages` table. The planning assistant (`docs/plans/planning-assistant.md` §5) and
+  the autopilot council (`docs/plans/autopilot.md` §7.1) need the same typed, threaded messages, and the owner agreed that
+  the in-app assistant must not become a second chat system. Nothing of the room existed yet, so unifying now avoids a
+  later migration rewrite.
+* **Decision:**
+  * `conversations` (`kind`: `room | planning | refine | explain | ask | council`; exactly one `room` per project through
+    a partial unique index) and `conversation_messages` replace `room_messages`. A message has `author_type`
+    (`human | assistant | orchestrator | agent | external_ai | system`), `intent` (the ADR-030 intents plus `answer`,
+    `decision`, `clarifying_question`, `brief_update`, `suggestion`), a plain-text `body` (≤ 8 000 characters), `refs`
+    jsonb (task, run, decision, approval, conversation, stage, paths), `thread_id` (one level deep: a reply to a reply
+    joins the root), `reply_count`/`last_reply_at` on the root, a monotonic `seq` as pagination cursor and an optional
+    `dedupe_key`, unique per conversation. Planning sessions, explanations and council transcripts become further kinds
+    on these tables.
+  * Content is untrusted. Core removes control, zero-width and bidi characters, redacts secrets with `redactSecrets` and
+    bounds the length before storing; the web renders text nodes only and turns only `http(s)` URLs into links
+    (`rel="noopener noreferrer nofollow ugc"`).
+  * Orchestrator events reach the room through `withRoomProjection`, a decorating `EventRecorder`, and
+    `RoomEventProjector`. Only allow-listed events are projected: task started/completed/blocked/failed, failed stages
+    and passed PLAN/IMPLEMENT/TEST/REVIEW/DEPLOY, pull request opened, CI failed, deployment finished, budget exhausted,
+    approval required/decided, decision made. Every notice has a dedupe key, so re-executed pipeline steps post once.
+    Routine notices are capped per run (default 12, per process) and followed by one suppression notice; approvals,
+    decisions and task outcomes always pass. Projection failures are logged and never fail a pipeline step. The room
+    service emits `room.message` through the undecorated recorder, so notices never project themselves.
+  * `room.message` events are content-free (`conversationId`, `messageId`, `seq`, `threadId`, `authorType`,
+    `authorName`, `intent`) and use the existing SSE stream with `Last-Event-ID` replay and LISTEN/NOTIFY fan-out
+    (ADR-008, ADR-024). Clients load bodies through the room API, which applies RBAC and the per-project ACL again.
+  * API in `apps/server/src/routes-room.ts` (ADR-016 style): viewers read; operators post `message | question` and reply
+    (`message | answer`); 30 posts per user per minute; audit entries `room.post` and `room.reply` without content.
+  * **Stage 1 as shipped:** data model (migration `0002_project_room`), room service, event projection, API with SSE,
+    Room tab in the web app, demo seed. **Moved to later stages:** leases with scheduler and pipeline checks, board
+    transitions and the new task columns, `@orchestrator` commands, read markers, MCP server and AI identities,
+    objections as council input.
+* **Consequences:** The planning assistant and the autopilot add their own tables and conversation kinds, not a second
+  message table. With several worker processes the per-run cap applies per process.
+* **Status:** Accepted (2026-09-15)
+
 ## ADR-013 — Project Health Scan: deterministic score, ROI-ranked proposals, guarded auto-acceptance
 * **Context:** Spec §14 asks for autonomous product improvement without "unrequested large changes". Model output is
   not reproducible, and an improvement loop must not flood projects with work or spend unbounded budget.
@@ -297,4 +377,61 @@ Format: context → decision → consequences → status.
   Mutations require the operator role and write audit entries, like every other mutating route, and every
   project-scoped read or action goes through the per-project access control of ADR-022.
 * **Consequences:** Feature areas can grow without touching the core route file.
+* **Status:** Accepted (2026-09-14)
+
+## ADR-031 — Every new dependency requires human approval
+* **Context:** Third-party code is the largest supply-chain risk the orchestrator can introduce: typosquatted or
+  "slopsquatted" packages (names a model hallucinates and an attacker then registers), compromised maintainers, and
+  GitHub Actions, MCP servers or editor/Claude plugins that run with developer or CI credentials. Agents already
+  propose new dependencies in normal tasks; the planned Plugin Scout and the autopilot will propose more. On
+  2026-09-14 the owner decided that every new dependency needs a human, whatever proposes it and at every autonomy
+  level (`docs/plans/plugin-scout.md` §9.3).
+* **Decision:**
+  * New gated action `dependency_addition` with a hard rule in `requiresApproval`: it always requires approval at
+    autonomy levels 0–4 (no level exception, unlike `production_deploy`) and regardless of the project gate
+    configuration. `ProjectSettingsSchema` rejects disabling it, stored settings are normalised to enabled, and the
+    settings UI shows it locked.
+  * `detectDependencyAdditions` (IO-free, `packages/core/src/approval/dependencies.ts`) compares the base and new
+    content of changed files and returns structured findings (kind, ecosystem, name, requested version, file).
+    Covered: `package.json` (dependencies, devDependencies, optional, peer; aliases and Git/URL sources),
+    `requirements*.txt` (including new package indexes), `pyproject.toml` (PEP 621, optional and dependency groups,
+    build requires, Poetry, uv, PDM), `Pipfile`, `Cargo.toml`, `go.mod`, `Gemfile`, `composer.json`, `*.csproj` and
+    NuGet props, `pom.xml`, `build.gradle(.kts)` and Gradle version catalogs, plus `package.json`
+    `overrides`/`resolutions`/`pnpm.overrides` and Cargo `[patch]`/`[replace]` that swap a package or its source, and
+    files a changed requirements file includes with `-r`; workflow and composite-action `uses:`; `.mcp.json` (identity
+    is the launched package, image or URL); `.claude/settings.json` plugins, marketplaces and MCP enablement;
+    `.vscode/extensions.json` recommendations. Version bumps and removals are not gated; they stay with the
+    Dependabot/review flow.
+  * Lockfiles are always parsed and diffed, whether or not a manifest changed in the same change set (review fix: a
+    manifest bump must not hide a package smuggled into the lockfile). Every installed package counts, not only direct
+    dependencies: `package-lock.json`/`npm-shrinkwrap.json` v1, v2 (both sections) and v3 including nested
+    `node_modules` entries, `pnpm-lock.yaml` importers and packages, `bun.lock` workspaces and packages, `yarn.lock`,
+    `Gemfile.lock` specs, NuGet `packages.lock.json` direct and transitive entries, `Cargo.lock`,
+    `poetry.lock`/`uv.lock`/`pdm.lock`, `Pipfile.lock`, `composer.lock`, `go.sum` and `gradle.lockfile`. A package
+    downloaded from somewhere other than the default registry (npm, Cargo, gems) carries its source in the identity,
+    so a swap to a fork counts as an addition. A lockfile entry is dropped only when a manifest addition of the same
+    package in this change set covers it and the lockfile does not install it from another source. Remaining entries
+    are reported with a label: "Added to the lockfile without a matching manifest entry" when no manifest of the
+    ecosystem changed in the lockfile's tree, otherwise "Lockfile addition not declared in manifest (possibly
+    transitive)". Approvals list declared additions first and lockfile findings as their own group.
+  * Parsers are linear scanners without backtracking regular expressions. Unparsable or oversized manifests count as
+    a possible addition, with the reason stated, and are gated. A binary or unparsable lockfile (`bun.lockb`) that
+    changed is reported as "possible addition, cannot inspect", also when only an existing dependency was bumped.
+  * The approval lists the findings with a registry link built from a fixed per-ecosystem URL template and a
+    validated name (rebuilt when the API reads it, never taken from repository text), plus a risk hint: GitHub
+    Actions, MCP servers, Claude plugins and VS Code extensions are high risk. The approvals API adds a typed
+    `dependencies` field; `details` is unchanged for existing clients.
+  * Enforcement: after IMPLEMENT (with the other change-set gates), in TEST before a sandbox run, and in COMMIT before
+    anything is published. The tool router backs this up with an `approvalCheck` on `git.commit` and on `test.run`
+    with `install`. The run waits like for any other gate, and approval expiry (ADR-023) applies.
+  * Decision memory: an approval grants `dependency_addition:<fingerprint>` for exactly the approved, sorted set of
+    findings, stored in the run checkpoint. A change set that adds anything else (or another version) needs a new
+    approval; grants are never reused by other runs or tasks.
+* **Consequences:** Relation to ADR-013: auto-accepted health-scan proposals still hit this gate when their change set
+  adds a dependency; auto-acceptance never implies dependency approval. A new workflow `uses:` needs both the
+  `critical_infrastructure` and the `dependency_addition` approval. New transitive packages appear in the approval as
+  labelled lockfile findings, so a legitimate new direct dependency usually brings a group of them; a binary lockfile
+  is gated on every change. Hooks, devcontainer features, `[tool.uv.sources]`/package indexes in `pyproject.toml`,
+  `.gemspec` dependencies, pnpm tarball sources and includes of requirements files that are not in the change set are
+  not covered yet.
 * **Status:** Accepted (2026-09-14)

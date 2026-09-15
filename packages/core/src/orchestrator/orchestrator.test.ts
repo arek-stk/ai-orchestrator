@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AgentRuntime } from '../agents/runtime';
 import type { AutonomyLevel } from '../domain/enums';
-import { defaultProjectProfile, defaultProjectSettings, type ProjectProfile } from '../domain/project';
+import { defaultProjectProfile, defaultProjectSettings, GATED_ACTIONS, type GatedAction, type ProjectProfile } from '../domain/project';
 import { TaskInputSchema, type TaskInput } from '../domain/task';
 import type { CheckReport } from '../github/port';
 import type { ModelProvider, StructuredRequest } from '../models/provider';
@@ -12,6 +12,10 @@ import { unavailableSandbox } from '../sandbox/port';
 import { InMemoryGitHub } from '../testing/in-memory-github';
 import { createMemoryStore } from '../testing/memory-store';
 import { runResearch } from '../intelligence/research';
+import type { EventRecorder } from '../ports';
+import { RoomEventProjector, withRoomProjection } from '../room/projector';
+import { RoomService } from '../room/service';
+import { createMemoryConversationStore } from '../testing/memory-conversations';
 import { Orchestrator, type StepResult } from './orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +23,10 @@ import { Orchestrator, type StepResult } from './orchestrator';
 // ---------------------------------------------------------------------------
 
 type Responder = (request: StructuredRequest<unknown>) => unknown;
+
+function packageJson(dependencies: Record<string, string>, devDependencies?: Record<string, string>): string {
+  return `${JSON.stringify({ name: 'shop', dependencies, ...(devDependencies ? { devDependencies } : {}) }, null, 2)}\n`;
+}
 
 function field(prompt: string, name: string): string {
   return new RegExp(`^${name}: (.+)$`, 'm').exec(prompt)?.[1] ?? '';
@@ -61,14 +69,17 @@ const responders: Record<string, Responder> = {
     const title = field(req.messages[0]!.content, 'Title');
     const changes = [{ path: 'src/feature.ts', action: 'create', content: 'export const feature = 1;\n', rationale: 'feature' }];
     if (title.includes('index')) changes.push({ path: 'db/migrations/0002_add_index.sql', action: 'create', content: 'CREATE INDEX idx ON products(name);\n', rationale: 'index' });
+    if (title.includes('dependency')) changes.push({ path: 'package.json', action: 'create', content: packageJson({ zod: '^4.1.0' }), rationale: 'schema validation' });
     return { summary: 'feature', changes, notes: [], confidence: 0.8 };
   },
-  test_output: () => ({
-    summary: 'tests',
-    testFiles: [{ path: 'src/feature.test.ts', action: 'create', content: 'test("x", () => {});\n', rationale: 'test' }],
-    coverageNotes: [],
-    confidence: 0.8,
-  }),
+  test_output: (req) => {
+    const testFiles = [{ path: 'src/feature.test.ts', action: 'create', content: 'test("x", () => {});\n', rationale: 'test' }];
+    // The tester adds a second dependency after the first one was approved.
+    if (field(req.messages[0]!.content, 'Title').includes('vitest')) {
+      testFiles.push({ path: 'package.json', action: 'create', content: packageJson({ zod: '^4.1.0' }, { vitest: '^3.2.0' }), rationale: 'test runner' });
+    }
+    return { summary: 'tests', testFiles, coverageNotes: [], confidence: 0.8 };
+  },
   debug_output: () => ({
     reproduction: 'ran tests',
     rootCause: 'wrong constant',
@@ -160,7 +171,7 @@ function scriptedSandbox(results: boolean[]): SandboxPort & { calls: number } {
 
 const repo = { owner: 'acme', name: 'shop' };
 
-async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; profile?: Partial<ProjectProfile>; budgetUsd?: number } = {}) {
+async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; profile?: Partial<ProjectProfile>; budgetUsd?: number; wrapEvents?: (events: EventRecorder, store: ReturnType<typeof createMemoryStore>) => EventRecorder } = {}) {
   let time = Date.parse('2026-09-14T10:00:00Z');
   const clock = { now: () => new Date(time) };
   const store = createMemoryStore(clock);
@@ -185,6 +196,7 @@ async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; 
 
   const orchestrator = new Orchestrator({
     ...store,
+    ...(options.wrapEvents ? { events: options.wrapEvents(store.events, store) } : {}),
     clock,
     runtime,
     github,
@@ -369,6 +381,91 @@ describe('Orchestrator pipeline', () => {
     expect((await h.store.runs.get(run.id))!.blockedReason).toContain('no schema changes this sprint');
   });
 
+  describe('dependency addition gate (ADR-031)', () => {
+    const allGatesOff = () => Object.fromEntries(GATED_ACTIONS.map((action) => [action, false])) as Record<GatedAction, boolean>;
+
+    async function parkedOnDependency(level: AutonomyLevel = 3, title = 'Add schema dependency') {
+      const h = await harness({ level });
+      // Every gate is switched off in the project config: the hard rule still applies.
+      await h.store.projects.update(h.project.id, { settings: { ...h.project.settings, approvalGates: allGatesOff() } });
+      const commitsBefore = h.github.commitCount(repo);
+      const task = await h.createTask({ title, goal: 'Validate product input with a schema library' });
+      const run = (await h.orchestrator.startTask(task.id))!;
+      expect(await h.drive(run.id)).toEqual({ next: 'wait', resumeAt: null });
+      const [approval] = await h.store.approvals.list({ status: 'pending' });
+      return { h, task, run, approval: approval!, commitsBefore };
+    }
+
+    it('waits for approval of a builder change set that adds a package, then continues to a pull request', async () => {
+      const { h, task, run, approval, commitsBefore } = await parkedOnDependency();
+      expect(approval).toMatchObject({ action: 'dependency_addition', runId: run.id, risk: 'medium' });
+      expect(approval.reason).toBe('1 new dependency needs human approval: zod@^4.1.0 (npm)');
+      expect(approval.details).toMatchObject({ totalFindings: 1, highRisk: false, paths: ['package.json'] });
+      expect(approval.details.findings).toEqual([
+        expect.objectContaining({ name: 'zod', version: '^4.1.0', ecosystem: 'npm', file: 'package.json', kind: 'package', registryUrl: 'https://www.npmjs.com/package/zod' }),
+      ]);
+      expect((await h.store.runs.get(run.id))!.stageStates.IMPLEMENT?.status).toBe('waiting');
+      expect((await h.store.tasks.get(task.id))!.status).toBe('WAITING_APPROVAL');
+      expect(h.github.commitCount(repo)).toBe(commitsBefore);
+      expect(h.github.pulls(repo)).toHaveLength(0);
+
+      await h.store.approvals.decide(approval.id, 'approved', 'usr_owner', null);
+      expect(await h.orchestrator.onApprovalDecided(approval.id)).toEqual({ next: 'continue' });
+      expect(await h.drive(run.id)).toMatchObject({ status: 'SUCCEEDED' });
+      const finished = (await h.store.runs.get(run.id))!;
+      expect(finished.checkpoint.approvedActions).toEqual([`dependency_addition:${approval.details.fingerprint as string}`]);
+      const [pr] = h.github.pulls(repo);
+      expect(h.github.fileAt(repo, h.github.branch(repo, pr!.head)!, 'package.json')).toContain('"zod"');
+
+      // Approvals are never reused across tasks: the same addition in another task waits again.
+      const again = await h.createTask({ title: 'Add schema dependency again', goal: 'Validate order input with a schema library' });
+      const secondRun = (await h.orchestrator.startTask(again.id))!;
+      expect(await h.drive(secondRun.id)).toEqual({ next: 'wait', resumeAt: null });
+      expect(await h.store.approvals.list({ status: 'pending' })).toEqual([expect.objectContaining({ action: 'dependency_addition', runId: secondRun.id })]);
+    });
+
+    it('also gates at level 2, where changes are never published', async () => {
+      const { approval } = await parkedOnDependency(2);
+      expect(approval.action).toBe('dependency_addition');
+    });
+
+    it('blocks the run when the dependency is rejected', async () => {
+      const { h, run, commitsBefore, approval } = await parkedOnDependency();
+      await h.store.approvals.decide(approval.id, 'rejected', 'usr_owner', 'use the built-in validator');
+      expect(await h.orchestrator.onApprovalDecided(approval.id)).toEqual({ next: 'done', status: 'BLOCKED' });
+      expect((await h.store.runs.get(run.id))!.blockedReason).toBe('dependency_addition was rejected by usr_owner: use the built-in validator.');
+      expect(h.github.commitCount(repo)).toBe(commitsBefore);
+    });
+
+    it('blocks the run when the approval expires (ADR-023)', async () => {
+      const { h, run, commitsBefore, approval } = await parkedOnDependency();
+      await h.store.approvals.decide(approval.id, 'expired', 'system', 'no decision within 72h');
+      expect(await h.orchestrator.onApprovalDecided(approval.id)).toEqual({ next: 'done', status: 'BLOCKED' });
+      expect((await h.store.runs.get(run.id))!.blockedReason).toMatch(/^Approval for dependency_addition expired without a decision/);
+      expect(h.github.commitCount(repo)).toBe(commitsBefore);
+      expect(h.github.pulls(repo)).toHaveLength(0);
+    });
+
+    it('requires a new approval when a later change set adds another dependency', async () => {
+      const { h, run, approval: first } = await parkedOnDependency(3, 'Add schema dependency with vitest');
+      await h.store.approvals.decide(first.id, 'approved', 'usr_owner', null);
+      await h.orchestrator.onApprovalDecided(first.id);
+
+      // The tester adds vitest: the first approval does not cover the new set.
+      expect(await h.drive(run.id)).toEqual({ next: 'wait', resumeAt: null });
+      const [second] = await h.store.approvals.list({ status: 'pending' });
+      expect(second).toMatchObject({ action: 'dependency_addition', runId: run.id });
+      expect(second!.details.fingerprint).not.toBe(first.details.fingerprint);
+      expect((second!.details.findings as Array<{ name: string }>).map((f) => f.name).sort()).toEqual(['vitest', 'zod']);
+      expect((await h.store.runs.get(run.id))!.stageStates.TEST?.status).toBe('waiting');
+
+      await h.store.approvals.decide(second!.id, 'approved', 'usr_owner', null);
+      await h.orchestrator.onApprovalDecided(second!.id);
+      expect(await h.drive(run.id)).toMatchObject({ status: 'SUCCEEDED' });
+      expect(await h.store.approvals.list({ projectId: h.project.id })).toHaveLength(2);
+    });
+  });
+
   it('decomposes complex tasks into a dependency graph and schedules only ready sub-tasks', async () => {
     const h = await harness();
     const parent = await h.createTask({ estimatedComplexity: 'complex' });
@@ -488,5 +585,45 @@ describe('Specialists in the pipeline', () => {
     const other = await h.createTask({ title: 'Another feature' });
     await h.drive((await h.orchestrator.startTask(other.id))!.id);
     expect(lastPrompts.plan_output).not.toContain('Research notes');
+  });
+});
+
+describe('Project Room projection in the pipeline', () => {
+  it('posts bounded, deduplicated room notices for stages, decisions and the outcome of a run', async () => {
+    const conversations = createMemoryConversationStore();
+    const h = await harness({
+      wrapEvents: (events, store) => withRoomProjection(events, new RoomEventProjector({ room: new RoomService({ ...conversations, events }), tasks: store.tasks })),
+    });
+    const task = await h.createTask();
+    const run = (await h.orchestrator.startTask(task.id))!;
+    expect(await h.drive(run.id)).toEqual({ next: 'done', status: 'SUCCEEDED' });
+
+    const messages = conversations.messages.all();
+    const bodies = messages.map((m) => m.body);
+    expect(bodies[0]).toBe('Started working on “Add product search”.');
+    expect(bodies.some((b) => b.startsWith('Stage PLAN passed for “Add product search”'))).toBe(true);
+    expect(messages.find((m) => m.intent === 'decision')).toMatchObject({ authorType: 'orchestrator', refs: { runId: run.id } });
+    expect(bodies.some((b) => b.startsWith('Opened pull request #1'))).toBe(true);
+    expect(bodies.at(-1)).toMatch(/^Finished “Add product search”: pr ready/);
+    // Bounded: no stage starts, agent calls or scheduler ticks, and every notice is unique per run.
+    expect(messages.length).toBeLessThanOrEqual(14);
+    expect(new Set(bodies).size).toBe(bodies.length);
+    expect(messages.every((m) => m.projectId === h.project.id && m.refs.runId === run.id)).toBe(true);
+    // Room messages are themselves events, but never projected again.
+    expect(h.store.events.log.filter((e) => e.type === 'room.message')).toHaveLength(messages.length);
+  });
+
+  it('posts the approval request when a gated change waits for a human', async () => {
+    const conversations = createMemoryConversationStore();
+    const h = await harness({
+      wrapEvents: (events, store) => withRoomProjection(events, new RoomEventProjector({ room: new RoomService({ ...conversations, events }), tasks: store.tasks })),
+    });
+    const task = await h.createTask({ title: 'Add product index' });
+    const run = (await h.orchestrator.startTask(task.id))!;
+    expect(await h.drive(run.id)).toEqual({ next: 'wait', resumeAt: null });
+    const request = conversations.messages.all().find((m) => m.intent === 'decision_request');
+    expect(request).toMatchObject({ authorType: 'orchestrator', refs: { runId: run.id } });
+    expect(request!.refs.approvalId).toBeTruthy();
+    expect(request!.body).toMatch(/^Approval needed for “Add product index”: database migration/);
   });
 });

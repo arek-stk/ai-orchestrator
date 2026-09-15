@@ -1,6 +1,23 @@
 import { z } from 'zod';
 import { ProviderError, type ProviderKind, type TokenUsage } from '@orch/core';
 
+const FENCE = '```';
+
+/**
+ * The body of a response wrapped in a ```json (or bare ```) fence, otherwise the trimmed text.
+ *
+ * Same result as `/^```(?:json)?\s*([\s\S]*?)\s*```$/i` on the trimmed text, computed with prefix/suffix checks and
+ * `trim()`: model output is untrusted and that pattern backtracks polynomially on a fence followed by long whitespace
+ * runs (CodeQL js/polynomial-redos). `\s` and `String.prototype.trim` strip the same characters.
+ */
+export function unwrapJsonFence(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length < FENCE.length * 2 || !trimmed.startsWith(FENCE) || !trimmed.endsWith(FENCE)) return trimmed;
+  let inner = trimmed.slice(FENCE.length, -FENCE.length);
+  if (/^json$/i.test(inner.slice(0, 4))) inner = inner.slice(4);
+  return inner.trim();
+}
+
 /**
  * Parses a provider's text response as JSON and validates it against the request schema.
  * Tolerates a surrounding ```json fence, which some OpenAI-compatible servers add.
@@ -13,9 +30,7 @@ export function parseStructuredText<T>(
   /** Billed usage attached to the error so failed attempts are still accounted for. */
   usage?: TokenUsage,
 ): T {
-  const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  const body = fenced ? fenced[1]! : trimmed;
+  const body = unwrapJsonFence(text);
   let json: unknown;
   try {
     json = JSON.parse(body);

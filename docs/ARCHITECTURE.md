@@ -136,6 +136,11 @@ large architecture change, secrets/permissions, cost above threshold, external s
 critical infra. A gate creates an `approvals` row, emits `approval.required`, and parks the run in
 `WAITING` until a human decides.
 
+Hard rule (ADR-031): `dependency_addition`. Every new dependency (manifest or lockfile-only package, workflow `uses:`,
+MCP server, Claude plugin, VS Code extension) needs a human at every autonomy level and cannot be disabled in the gate
+configuration. It is detected from the change set after IMPLEMENT, before sandbox runs and at COMMIT, with a tool router
+backstop on `git.commit`; an approval covers exactly the fingerprinted set of additions.
+
 ### 4.12 Budgets
 Global daily → project → task → agent-run. Before every model call `BudgetGuard.check()` returns
 `allow | degrade (cheaper model / smaller context / reuse cached decision) | pause`. Every call writes
@@ -188,6 +193,14 @@ health score (persisted on `projects.health_score` and in `health_scans`) → he
 ≤ 1 DevOps call under a per-scan cost cap → ROI-ranked, fingerprint-deduplicated `improvement_proposals`. Proposals
 become BACKLOG tasks when accepted via API, or automatically only at autonomy ≥ 3 for low-risk, small-effort proposals
 (capped). API: `apps/server/src/routes-health.ts`. Events: `project.health_scanned`, `improvement.proposed|accepted|dismissed`.
+
+### 4.15 Project Room and conversations (ADR-030)
+One conversation model for every chat surface: `conversations` (one `room` per project; planning, explain and council
+kinds later) and `conversation_messages` (typed author and intent, plain-text body, refs, one-level threads, `seq`
+cursor, dedupe key). `RoomService` (`packages/core/src/room`) sanitises and redacts untrusted content; the composition
+root wraps the event recorder with `withRoomProjection`, so allow-listed orchestrator events become deduplicated,
+per-run capped room notices. API: `apps/server/src/routes-room.ts`; live updates are content-free `room.message` events
+on the SSE stream.
 
 ## 7. Deferred (post-MVP, interfaces already in place)
 Temporal workflow engine (behind `WorkflowEngine`), BullMQ/Redis queue (behind `JobQueue`), additional

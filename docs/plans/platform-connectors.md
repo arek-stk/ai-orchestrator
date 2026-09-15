@@ -5,7 +5,7 @@ ein Projekt da reinbauen kann oder Videos erstellen kann".
 Interpretation: (a) build and ship projects directly into platforms (e.g. a Roblox experience); (b) create videos (dev
 logs, demos, trailers, content projects) and publish them (YouTube, TikTok, …).
 
-Status: **proposal / research**. Nothing here is implemented. ADR draft in §10 ("ADR-0XX, number assigned at merge").
+Status: **proposal / research**. Nothing here is implemented. ADR draft in §10 (proposed as ADR-036).
 Research date 2026-09-14; platform rules change often, so every fact below must be re-checked before the matching stage
 starts. This is not legal advice. Claims are tagged:
 **[V]** verified on an official page during research · **[S]** only from search snippets, secondary sources or an
@@ -637,7 +637,7 @@ risk (private by API rule, no generative video spend). TikTok follows only as in
 
 ## 11. Proposed ADR (draft — not in `docs/DECISIONS.md`)
 
-> ## ADR-0XX (number assigned at merge) — Platform publishing connectors and Media Studio; humans always publish
+> ## ADR-036 (proposed) — Platform publishing connectors and Media Studio; humans always publish
 > * **Context:** The owner wants projects shipped directly into platforms (e.g. Roblox) and videos produced and
 >   published (YouTube, TikTok). Platform terms require the account holder's express consent for uploads (YouTube
 >   Developer Policies III.E.3/III.I, TikTok content sharing guidelines), unaudited API clients are restricted to private

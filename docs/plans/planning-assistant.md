@@ -5,7 +5,7 @@ Projektplanung oder -erstellung (oder erfinde etwas, was dazu passen könnte) mi
 präzisiert".
 Status: **proposal** (ADR-033 draft in §13). Nothing here is implemented. Builds on PR #12
 (`feat/product-improvement`: health scans, improvement proposals, research agent, agent output cache — ADR-013…016)
-and on ADR-030 (Project Room). Takes `docs/plans/plugin-scout.md` (ADR-031 draft) and
+and on ADR-030 (Project Room). Takes `docs/plans/plugin-scout.md` (ADR-035 draft) and
 `docs/research/multi-account-ai.md` (provider accounts) into account.
 
 ## Zusammenfassung (Deutsch)
@@ -42,7 +42,7 @@ and on ADR-030 (Project Room). Takes `docs/plans/plugin-scout.md` (ADR-031 draft
   Aufgaben mit Abhängigkeiten im Backlog, mit Hold. Die Gründe: Grounding-Daten sind vorhanden, Operator-Rechte
   reichen, es gibt keine Abhängigkeit von noch nicht gebauten ADR-030-Tabellen, und mit dem Mock-Provider ist alles
   testbar. Danach folgen „Neues Projekt aus Idee“, dann Erklären und Verfeinern, dann Room/MCP und Token-Streaming.
-* **ADR-Nummer:** ADR-033 als Vorschlag. ADR-031 ist der Plugin Scout. ADR-032 bleibt für Provider-Accounts
+* **ADR-Nummer:** ADR-033 als Vorschlag. ADR-031 ist die Freigabe-Regel für neue Abhängigkeiten, der Plugin Scout wird ADR-035. ADR-032 bleibt für Provider-Accounts
   reserviert, weil deren Research ebenfalls „z. B. ADR-031“ nennt.
 * **Offene Punkte und Trade-offs:** Token-Streaming braucht eine Erweiterung des Provider-Ports. Interaktive Turns
   laufen bewusst nicht über die Job-Queue (begründete Abweichung von ADR-004). Schätzungen bleiben grob. Offen sind
@@ -666,6 +666,6 @@ stage 4), cross-project portfolio planning.
   `brief_suggestions`, `brief_conflicts`, `brief_applications`), task columns `scheduling_hold`, `hold_reason`,
   `origin`, ledger columns `conversation_id`, `requested_by_user_id`; ADR-030's room is built on the conversation
   tables; ADR-030's roadmap proposal becomes Planning Studio apply. Routes live in
-  `apps/server/src/routes-assistant.ts` (ADR-016 pattern). Numbering: ADR-031 is reserved by the plugin scout draft,
+  `apps/server/src/routes-assistant.ts` (ADR-016 pattern). Numbering: ADR-031 is the dependency approval gate, ADR-035 the plugin scout draft,
   ADR-032 is recommended for provider accounts.
 * **Status:** Proposed (2026-09-14)

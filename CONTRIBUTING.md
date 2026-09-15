@@ -39,6 +39,29 @@ npm test            # vitest, no database or Docker required (embedded PGlite, i
 * Releases are automated: release-please keeps a release PR with the next version and `CHANGELOG.md` up to date;
   merging it publishes the GitHub release.
 
+## Releases & milestones
+
+* Roadmap milestones are named `vX.Y — <theme>` (for example `v0.5 — Project Room`); unscheduled work lives in
+  `Backlog — proposed`. Put issues and PRs into the milestone they deliver; a PR without one gets it from a
+  `milestone:vX.Y` label or from `Closes #N` pointing at an issue in that milestone.
+* When the lowest open `vX.Y` milestone has no open items, the **Milestone release** workflow works towards `X.Y.0`.
+  After the release is published it adds the milestone link to the notes and closes the milestone. What it does before
+  that depends on the mode (repository variables, only the exact value `true` counts):
+  * **Safe mode (default):** comments only. If the release PR targets another version, the workflow comments the
+    commands for a `Release-As: X.Y.0` PR that a maintainer opens and squash-merges (keep the `Release-As` line in the
+    commit message). Once the release PR targets `X.Y.0` it comments that it is ready; approve its pending workflow
+    runs (or run CI on its branch) and merge it.
+  * **Prepare mode** (`AUTO_RELEASE_PREPARE=true`): the workflow also opens the Release-As PR itself and runs CI on bot
+    PRs; a maintainer merges.
+  * **Full mode** (`AUTO_RELEASE_MERGE=true`): additionally enables squash auto-merge on those PRs. `main` has no
+    required reviews and does not enforce admins, so the bot then lands release commits without a human; prefer safe
+    mode, or add required reviews / a dedicated GitHub App first.
+* To pause everything, add the `release:hold` label to the release PR or set the repository variable `AUTO_RELEASE`
+  to `false`; close a Release-As PR to veto it. Variable changes apply on the next run, so disable an already enabled
+  auto-merge by hand if it must stop at once. Run the workflow manually with `dry_run` to see its plan. Bot merges
+  trigger no workflows, so finishing a release can take up to ~2 hours (scheduled fallback). Details: ADR-012
+  addendum in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
 ## Automation
 
 * **CI** runs typecheck and tests on every pull request; it is required on `main`.

@@ -1,0 +1,137 @@
+name: Milestone release
+
+# Milestones named "vX.Y — …" drive releases (ADR-012 addendum). Once such a milestone has no open items, the
+# release-please PR is retargeted to X.Y.0 if needed and made ready to merge; after the release is published the
+# milestone is closed.
+# Modes (repository variables; only the exact value true counts):
+# - Safe (default): comments only. No pull requests, no CI dispatch for bot PRs, no auto-merge; a maintainer retargets,
+#   runs CI and merges.
+# - Prepare (AUTO_RELEASE_PREPARE=true): also opens the Release-As PR and dispatches CI for bot PRs; a maintainer merges.
+# - Full (AUTO_RELEASE_MERGE=true, implies prepare): also enables squash auto-merge on those PRs.
+# Pause: repository variable AUTO_RELEASE=false or the release:hold label on the release PR. While paused nothing is
+# dispatched, created or merged; only auto-merge enabled by this workflow is withdrawn.
+# pull_request_target is safe here: jobs check out the default branch only and never run pull request code.
+on:
+  issues:
+    types: [closed, reopened, milestoned, demilestoned]
+  pull_request_target:
+    types: [opened, reopened, edited, labeled, closed]
+  milestone:
+    # Includes closed on purpose: closed milestones are ignored, so the re-trigger from a close is self-limiting.
+    types: [created, edited, opened, closed]
+  schedule:
+    # Fallback for bot merges and releases, which trigger no workflows: finishing a release can take up to ~2 hours.
+    - cron: "41 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Log the plan without changing anything
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  assign:
+    name: Assign milestone
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.milestone == null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: milestone-assign-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/milestone-release
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # Only a milestone:vX.Y label or a closing reference to an issue in an open vX.Y milestone assigns one.
+      - name: Assign milestone from labels or closing references
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
+        run: node .github/scripts/milestone-release/run.mjs assign
+
+  # Issue and pull request events can come from anyone. A read-only job decides whether the write-capable release job
+  # may start: a milestone must be involved (or release:hold was added) and the actor needs write, maintain or admin
+  # permission. Any failure leaves the output unset, which skips the release job.
+  gate:
+    name: Check event trust
+    if: >-
+      github.event_name == 'issues' ||
+      (github.event_name == 'pull_request_target' && (github.event.action == 'closed' ||
+        (github.event.action == 'labeled' && github.event.label.name == 'release:hold')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/milestone-release
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - id: gate
+        name: Check milestone involvement and actor permission
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name || '' }}
+          ACTOR: ${{ github.actor }}
+          ITEM_MILESTONE: ${{ github.event.issue.milestone.number || github.event.pull_request.milestone.number || '' }}
+          EVENT_MILESTONE: ${{ github.event.milestone.number || '' }}
+        run: node .github/scripts/milestone-release/run.mjs gate
+
+  release:
+    name: Evaluate milestones
+    needs: [assign, gate]
+    if: >-
+      always() && !cancelled() && (
+        github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'milestone' || needs.gate.outputs.proceed == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: milestone-release
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      checks: read
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/milestone-release
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Evaluate milestones and apply the plan for the configured mode
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
+          AUTO_RELEASE_PREPARE: ${{ vars.AUTO_RELEASE_PREPARE }}
+          AUTO_RELEASE_MERGE: ${{ vars.AUTO_RELEASE_MERGE }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node .github/scripts/milestone-release/run.mjs release

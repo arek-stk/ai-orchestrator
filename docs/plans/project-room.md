@@ -3,6 +3,18 @@
 Decision: ADR-030. Implementation starts after the currently open module PRs (web dashboard, platform operations,
 orchestration improvements) are merged, because it touches database, server, core and web at once.
 
+## Progress
+
+| Stage | State |
+|---|---|
+| 1 — Room on the unified conversation model | ✅ merged (PR #22). Built: `conversations` + `conversation_messages` (replaces `room_messages`, see the ADR-030 addendum), `RoomService` (sanitising, redaction, threads, seq cursors), `RoomEventProjector` (allow-listed, deduplicated, per-run capped notices), room API with SSE (`apps/server/src/routes-room.ts`), Room tab with threads and live updates, demo seed. |
+| 1 — remainder | Open: leases (`leases.ts`, scheduler and pipeline checks), board transitions and task columns (assignee, milestone, board position, estimate), `@orchestrator` commands, read markers. |
+| 2–4 | Open. Board and milestones UI, MCP server + AI identities, objections, roadmap. |
+
+Room API (stage 1): `GET /api/projects/:id/room`, `GET|POST /api/projects/:id/room/messages` (`before`/`after` seq
+cursors, `limit` ≤ 100), `GET|POST /api/projects/:id/room/messages/:messageId/replies`. SSE event: `room.message`
+(content-free).
+
 ## Goals
 
 1. Humans (owner, colleagues, friends) and their own AI assistants work on the same project with the orchestrator.
