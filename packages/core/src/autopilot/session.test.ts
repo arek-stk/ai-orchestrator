@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { defaultProjectSettings, GATED_ACTIONS } from '../domain/project';
+import { defaultProjectSettings, GATED_ACTIONS, HARD_GATED_ACTIONS } from '../domain/project';
 import type { Approval, Decision } from '../domain/records';
 import { buildAutopilotDigest, filterAutopilotDigest, type AutopilotDigestInput } from './digest';
 import {
   applyAutopilotSession,
+  AUTOPILOT_HARD_GATES,
   autopilotStartSchema,
   DEFAULT_AUTOPILOT_LIMITS,
   defaultStopPolicy,
@@ -68,6 +69,11 @@ describe('effective autonomy', () => {
     expect(Object.values(view.settings.approvalGates).every(Boolean)).toBe(true);
     expect(project.autonomyLevel).toBe(4);
     expect(Object.values(project.settings.approvalGates).some(Boolean)).toBe(false);
+  });
+
+  it('treats every gated action as hard, including the ADR-031 hard gates', () => {
+    expect([...AUTOPILOT_HARD_GATES].sort()).toEqual([...GATED_ACTIONS].sort());
+    expect(AUTOPILOT_HARD_GATES).toEqual(expect.arrayContaining([...HARD_GATED_ACTIONS, 'dependency_addition']));
   });
 
   it('rejects ceilings above the instance maximum and unknown time zones at the boundary', () => {
@@ -279,6 +285,26 @@ describe('return digest', () => {
     expect(JSON.stringify(buildAutopilotDigest(shuffled, now))).toBe(JSON.stringify(buildAutopilotDigest(input, now)));
     // An ended session's digest does not depend on when it is looked at.
     expect(buildAutopilotDigest(input, new Date(now.getTime() + 24 * HOUR))).toEqual(buildAutopilotDigest(input, now));
+  });
+
+  it('leaks nothing about a hidden project to a viewer who sees only one project of the session', () => {
+    const full = buildAutopilotDigest(digestInput(), T0);
+    const visibleOnly = filterAutopilotDigest(full, new Set(['prj_a']));
+    const hiddenOnly = filterAutopilotDigest(full, new Set(['prj_b']));
+
+    // Session budget $5, prj_a $3.50, prj_b $1.25: shares are computed from visible spend only.
+    expect(full.costs).toMatchObject({ totalUsd: 4.75, budgetUsedPct: 95 });
+    expect(visibleOnly.costs).toEqual({ totalUsd: 3.5, budgetUsd: 5, budgetUsedPct: 70, byProject: [{ projectId: 'prj_a', costUsd: 3.5 }] });
+    expect(hiddenOnly.costs).toEqual({ totalUsd: 1.25, budgetUsd: 5, budgetUsedPct: 25, byProject: [{ projectId: 'prj_b', costUsd: 1.25 }] });
+    // The stop detail aggregates the whole session ("spent $5.00 of $5.00"); partial views omit it.
+    expect(visibleOnly.stop).toEqual({ reason: 'budget_exhausted', detail: null, by: 'system' });
+    expect(visibleOnly.totals).toEqual({ runsStarted: 2, succeeded: 1, failed: 0, cancelled: 0, inProgress: 0, parked: 1, pullRequests: 1, decisions: 1 });
+
+    // No field of the filtered digest mentions the hidden project or its records.
+    const serialized = JSON.stringify(visibleOnly);
+    for (const hidden of ['prj_b', 'run_2', 'run_y', 'tsk_2', 'tsk_y', 'Refactor cart', 'Gave up after 3 repair attempts']) expect(serialized).not.toContain(hidden);
+    // A viewer who sees every project gets the unfiltered digest.
+    expect(filterAutopilotDigest(full, new Set(['prj_a', 'prj_b']))).toEqual(full);
   });
 
   it('shows restricted viewers only their projects, including totals', () => {

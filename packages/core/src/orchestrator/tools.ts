@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dependencyApprovalGrant, describeDependencyFindings, detectDependencyAdditions } from '../approval/dependencies';
 import { PROJECT_COMMANDS } from '../domain/project';
 import type { GitHubPort, PullRequestRef, RepoCoordinates } from '../github/port';
 import type { SandboxPort } from '../sandbox/port';
@@ -10,6 +11,7 @@ import {
   resolveProjectCommand,
   ToolDeniedError,
   ToolRouter,
+  type ToolApprovalRequirement,
   type ToolAuditEntry,
   type ToolContext,
   type ToolName,
@@ -41,6 +43,14 @@ const Sha = z.string().regex(/^[0-9a-f]{7,64}$/i, 'expected a commit sha');
  * PRs, CI, sandbox runs, deployments — goes through here, so permissions, guards and audit always apply.
  */
 export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter {
+  /** New dependencies in the staged change set compared with `ref` (ADR-031). */
+  const dependencyRequirement = async (ctx: ToolContext, tool: ToolName, ref: string): Promise<ToolApprovalRequirement | null> => {
+    const repo = ctx.project.repo;
+    const detection = await detectDependencyAdditions(workspaceOf(ctx, tool).changes(), (path) => (repo ? deps.github.getFileContent(repo, path, ref) : Promise.resolve(null)));
+    if (!detection.fingerprint) return null;
+    return { action: 'dependency_addition', grant: dependencyApprovalGrant(detection.fingerprint), detail: describeDependencyFindings(detection.findings) };
+  };
+
   return new ToolRouter({ audit: deps.audit, ...(deps.sessionGuard ? { sessionGuard: deps.sessionGuard } : {}) })
     .register({
       name: 'repository.write',
@@ -109,7 +119,13 @@ export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter 
     .register({
       name: 'git.commit',
       description: 'Create a commit from the staged change set',
-      input: z.object({ branch: z.string().min(1).max(200), parentSha: Sha, message: z.string().min(1).max(5000) }),
+      input: z.object({
+        branch: z.string().min(1).max(200),
+        parentSha: Sha,
+        /** Default-branch commit the change set is compared against for new dependencies; defaults to the parent. */
+        baseSha: Sha.optional(),
+        message: z.string().min(1).max(5000),
+      }),
       minAutonomy: 3,
       guard: (args, ctx) => {
         guardWritableBranch(args.branch, ctx, 'git.commit');
@@ -118,6 +134,8 @@ export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter 
           if (change.content) guardNoSecrets(change.content, 'git.commit');
         }
       },
+      // Backstop for ADR-031: nothing with an unapproved new dependency is ever committed.
+      approvalCheck: (args, ctx) => dependencyRequirement(ctx, 'git.commit', args.baseSha ?? args.parentSha),
       execute: async (args, ctx) => ({
         sha: await deps.github.createCommit(repoOf(ctx, 'git.commit'), {
           parentSha: args.parentSha,
@@ -176,6 +194,8 @@ export function createOrchestratorTools(deps: OrchestratorToolDeps): ToolRouter 
         if (!deps.sandbox.available) throw new ToolDeniedError('test.run', 'security', 'sandbox is not available');
         for (const command of args.commands) resolveProjectCommand(command, ctx, 'test.run');
       },
+      // Installs reach the package registry: unapproved new dependencies are never downloaded (ADR-031).
+      approvalCheck: (args, ctx) => (args.commands.includes('install') ? dependencyRequirement(ctx, 'test.run', args.ref) : Promise.resolve(null)),
       execute: (args, ctx) =>
         deps.sandbox.run({
           projectId: ctx.project.id,

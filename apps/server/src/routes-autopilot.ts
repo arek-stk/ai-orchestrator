@@ -44,7 +44,11 @@ export async function registerAutopilotRoutes(app: FastifyInstance, container: C
 
   const visibleIn = (visible: VisibleProjects, session: AutopilotSession) => visible === null || session.projectIds.some((id) => visible.has(id));
   const operableIn = (visible: VisibleProjects, session: AutopilotSession) =>
-    visible === null || session.projectIds.some((id) => ROLE_RANK[visible.get(id) ?? 'viewer'] >= ROLE_RANK.operator && visible.has(id));
+    visible === null ||
+    session.projectIds.some((id) => {
+      const role = visible.get(id);
+      return role !== undefined && ROLE_RANK[role] >= ROLE_RANK.operator;
+    });
 
   /** The session as a viewer may see it: projects outside the viewer's ACL are omitted. */
   async function present(session: AutopilotSession, visible: VisibleProjects) {
@@ -55,6 +59,8 @@ export async function registerAutopilotRoutes(app: FastifyInstance, container: C
     return {
       ...session,
       projectIds,
+      // The stop detail aggregates the whole session (total spend, cross-project streaks); partial views omit it.
+      stopDetail: fullyVisible ? session.stopDetail : null,
       progress: {
         // Spend of hidden projects would leak their activity; partially visible sessions show no total.
         spentUsd: fullyVisible ? await autopilotSessions.spentUsd(session) : null,

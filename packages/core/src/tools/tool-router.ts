@@ -93,7 +93,19 @@ export interface ToolDefinition<A, R> {
   estimateCostUsd?: (args: A, ctx: ToolContext) => number;
   /** Tool-specific security checks. Throw ToolDeniedError or UnsafePathError to deny. */
   guard?: (args: A, ctx: ToolContext) => void;
+  /**
+   * Approval that depends on the arguments or the staged workspace, e.g. new dependencies (ADR-031). Denied unless
+   * `grant` is among the run's approved actions; the policy's hard rules apply.
+   */
+  approvalCheck?: (args: A, ctx: ToolContext) => Promise<ToolApprovalRequirement | null>;
   execute: (args: A, ctx: ToolContext) => Promise<R>;
+}
+
+export interface ToolApprovalRequirement {
+  action: GatedAction;
+  /** Entry in `approvedActions` that covers exactly this requirement. */
+  grant: string;
+  detail: string;
 }
 
 export interface ToolAuditEntry {
@@ -197,6 +209,24 @@ export class ToolRouter {
       !ctx.approvedActions.includes(tool.gatedAction)
     ) {
       return deny('approval_required', `${tool.gatedAction} requires human approval`, tool.gatedAction);
+    }
+
+    if (tool.approvalCheck) {
+      let requirement: ToolApprovalRequirement | null;
+      try {
+        requirement = await tool.approvalCheck(args, ctx);
+      } catch (error) {
+        if (error instanceof ToolDeniedError) return deny(error.reason, error.detail, error.gatedAction);
+        await audit('failed', { reason: `approval check: ${error instanceof Error ? error.message : String(error)}` });
+        throw error;
+      }
+      if (
+        requirement &&
+        requiresApproval({ action: requirement.action, autonomyLevel: ctx.project.autonomyLevel, gates: ctx.project.settings.approvalGates }) &&
+        !ctx.approvedActions.includes(requirement.grant)
+      ) {
+        return deny('approval_required', requirement.detail, requirement.action);
+      }
     }
 
     const costUsd = tool.estimateCostUsd?.(args, ctx) ?? 0;

@@ -136,6 +136,11 @@ large architecture change, secrets/permissions, cost above threshold, external s
 critical infra. A gate creates an `approvals` row, emits `approval.required`, and parks the run in
 `WAITING` until a human decides.
 
+Hard rule (ADR-031): `dependency_addition`. Every new dependency (manifest or lockfile-only package, workflow `uses:`,
+MCP server, Claude plugin, VS Code extension) needs a human at every autonomy level and cannot be disabled in the gate
+configuration. It is detected from the change set after IMPLEMENT, before sandbox runs and at COMMIT, with a tool router
+backstop on `git.commit`; an approval covers exactly the fingerprinted set of additions.
+
 ### 4.12 Budgets
 Global daily → project → task → agent-run. Before every model call `BudgetGuard.check()` returns
 `allow | degrade (cheaper model / smaller context / reuse cached decision) | pause`. Every call writes

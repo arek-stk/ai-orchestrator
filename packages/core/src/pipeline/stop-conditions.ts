@@ -6,6 +6,8 @@ export interface RunCounters {
   tokens: number;
   debugAttempts: number;
   startedAt: Date;
+  /** Time spent PARKED waiting for a human (autopilot); it does not count towards the runtime limit. */
+  parkedMs?: number;
 }
 
 export type StopReason = 'max_iterations' | 'max_cost' | 'max_tokens' | 'max_runtime' | 'max_debug_attempts';
@@ -23,7 +25,7 @@ export function checkStopConditions(counters: RunCounters, limits: StopCondition
   if (counters.tokens >= limits.maxTokens) {
     return { stop: true, reason: 'max_tokens', detail: `${counters.tokens}/${limits.maxTokens} tokens used` };
   }
-  const runtime = now.getTime() - counters.startedAt.getTime();
+  const runtime = now.getTime() - counters.startedAt.getTime() - Math.max(0, counters.parkedMs ?? 0);
   if (runtime >= limits.maxRuntimeMs) {
     return { stop: true, reason: 'max_runtime', detail: `ran ${Math.round(runtime / 1000)}s of ${Math.round(limits.maxRuntimeMs / 1000)}s` };
   }

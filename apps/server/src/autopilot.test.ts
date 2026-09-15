@@ -168,7 +168,13 @@ describe('autopilot API', () => {
     expect((await send('bob', 'POST', `/api/autopilot/sessions/${ids.session}/stop`)).statusCode).toBe(409);
 
     const session = (await get('alice', `/api/autopilot/sessions/${ids.session}`)).json().session;
-    expect(session).toMatchObject({ status: 'killed', stopReason: 'killed', stoppedBy: 'bob' });
+    expect(session).toMatchObject({ status: 'killed', stopReason: 'killed', stoppedBy: 'bob', stopDetail: 'killed by bob' });
+    // Vic sees only project A of this two-project session: no session-wide aggregates.
+    const vicSession = (await get('vic', `/api/autopilot/sessions/${ids.session}`)).json().session;
+    expect(vicSession).toMatchObject({ status: 'killed', stopReason: 'killed', stopDetail: null, projectIds: [ids.projectA], progress: { spentUsd: null } });
+    const vicDigest = (await get('vic', `/api/autopilot/sessions/${ids.session}/digest`)).json().digest;
+    expect(vicDigest.stop.detail).toBeNull();
+    expect(vicDigest.costs.budgetUsedPct).toBeCloseTo(Math.min(100, Math.round((vicDigest.costs.totalUsd / vicDigest.costs.budgetUsd) * 1000) / 10), 6);
     const [entry] = await container.admin.audit.list({ action: 'autopilot.session.kill', limit: 1 });
     expect(entry).toMatchObject({ actorType: 'user', actorId: ids.userBob, target: ids.session });
     const events = (await get('bob', `/api/events?projectId=${ids.projectA}`)).json().events as Array<{ type: string }>;

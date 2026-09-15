@@ -1,5 +1,6 @@
 import { AGENT_DEFINITIONS } from '../agents/definitions';
 import type { AgentRuntime } from '../agents/runtime';
+import { approvalGrant } from '../approval/dependencies';
 import type { AutopilotAuditEntry, AutopilotSessionRepository } from '../autopilot/service';
 import { applyAutopilotSession, DEFAULT_AUTOPILOT_LIMITS, sessionTaskEligibility, type AutopilotLimits, type AutopilotSession } from '../autopilot/session';
 import type { FileSummaryStore } from '../context/file-summarizer';
@@ -359,7 +360,7 @@ export class Orchestrator {
     const activeSession = session?.status === 'active' ? session : null;
     const project = session ? applyAutopilotSession(baseProject, session, this.options.autopilot) : baseProject;
 
-    const stop = checkStopConditions(run, run.limits, now);
+    const stop = checkStopConditions({ ...run, parkedMs: run.checkpoint.parkedMs ?? 0 }, run.limits, now);
     if (stop.stop) {
       await this.block(run, task, project, `Stop condition "${stop.reason}" reached: ${stop.detail}.`);
       return this.persist(run, { next: 'done', status: run.status });
@@ -427,6 +428,10 @@ export class Orchestrator {
     });
     run.checkpoint.pendingApprovalId = null;
     if (run.status === 'PARKED') {
+      // Waiting for a human while away is not run time: without this, approving after a long absence would block the
+      // run on max_runtime immediately.
+      const parkedFor = Math.max(0, this.deps.clock.now().getTime() - approval.requestedAt.getTime());
+      run.checkpoint.parkedMs = (run.checkpoint.parkedMs ?? 0) + parkedFor;
       await this.deps.events.emit({ type: 'autopilot.run.unparked', projectId: project.id, taskId: task.id, runId: run.id, payload: { sessionId: run.sessionId, approvalId: approval.id, status } });
       await this.audit('autopilot.run.unpark', run.id, { sessionId: run.sessionId, approvalId: approval.id, status, by: approval.decidedBy ?? 'unknown' });
     }
@@ -441,7 +446,9 @@ export class Orchestrator {
       return this.persist(run, { next: 'done', status: run.status });
     }
 
-    if (!run.checkpoint.approvedActions.includes(approval.action)) run.checkpoint.approvedActions.push(approval.action);
+    // Dependency approvals grant exactly the approved set of additions (ADR-031), not the action as a whole.
+    const grant = approvalGrant(approval);
+    if (grant && !run.checkpoint.approvedActions.includes(grant)) run.checkpoint.approvedActions.push(grant);
     run.status = 'RUNNING';
     run.resumeAt = null;
     await this.deps.tasks.update(task.id, { status: 'RUNNING' });

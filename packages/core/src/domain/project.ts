@@ -10,8 +10,12 @@ export const GATED_ACTIONS = [
   'high_cost',
   'external_service',
   'critical_infrastructure',
+  'dependency_addition',
 ] as const;
 export type GatedAction = (typeof GATED_ACTIONS)[number];
+
+/** Gates that no autonomy level and no project gate configuration can switch off (ADR-031). */
+export const HARD_GATED_ACTIONS: readonly GatedAction[] = Object.freeze(['dependency_addition'] as const);
 
 export interface StopConditions {
   maxIterations: number;
@@ -121,6 +125,7 @@ export function defaultApprovalGates(): Record<GatedAction, boolean> {
     high_cost: true,
     external_service: true,
     critical_infrastructure: true,
+    dependency_addition: true,
   };
 }
 
@@ -217,7 +222,11 @@ export const ProjectProfileSchema = z.object({
 export const ProjectSettingsSchema = z.object({
   stopConditions: StopConditionsSchema,
   council: CouncilSettingsSchema,
-  approvalGates: z.record(z.enum(GATED_ACTIONS), z.boolean()),
+  approvalGates: z
+    .record(z.enum(GATED_ACTIONS), z.boolean())
+    .refine((gates) => HARD_GATED_ACTIONS.every((action) => gates[action] !== false), {
+      message: 'dependency_addition cannot be disabled: every new dependency needs human approval (ADR-031)',
+    }),
   highCostThresholdUsd: z.number().min(0).max(10_000),
   maxConcurrentTasks: z.number().int().min(1).max(20),
   modelOverrides: z.partialRecord(z.enum(AGENT_ROLES), z.string().min(1).max(200)),
@@ -243,14 +252,38 @@ export const ProjectInputSchema = z.object({
 });
 export type ProjectInput = z.infer<typeof ProjectInputSchema>;
 
+function isSlugChar(code: number): boolean {
+  return (code >= 97 && code <= 122) || (code >= 48 && code <= 57);
+}
+
+/**
+ * Lower-cases `text` and joins its runs of `[a-z0-9]` with single dashes, without leading or trailing dashes. With
+ * `maxLength`, the slug is cut to that length and a dash left at the cut is dropped.
+ *
+ * Same result as `.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')` (then `.slice(0, max)
+ * .replace(/-+$/g, '')`), computed in one linear pass: titles and names are untrusted input and the `-+$` alternative
+ * backtracks polynomially on long dash runs (CodeQL js/polynomial-redos).
+ */
+export function dashSlug(text: string, maxLength?: number): string {
+  const lower = text.toLowerCase();
+  const runs: string[] = [];
+  let start = -1;
+  for (let i = 0; i <= lower.length; i++) {
+    const inRun = i < lower.length && isSlugChar(lower.charCodeAt(i));
+    if (inRun && start < 0) start = i;
+    else if (!inRun && start >= 0) {
+      runs.push(lower.slice(start, i));
+      start = -1;
+    }
+  }
+  const slug = runs.join('-');
+  if (maxLength === undefined) return slug;
+  // Runs are joined by single dashes, so a cut leaves at most one trailing dash.
+  const cut = slug.slice(0, maxLength);
+  return cut.endsWith('-') ? cut.slice(0, -1) : cut;
+}
+
 export function slugify(name: string): string {
-  const slug = name
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64)
-    .replace(/-+$/g, '');
+  const slug = dashSlug(name.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''), 64);
   return slug.length > 0 ? slug : 'project';
 }

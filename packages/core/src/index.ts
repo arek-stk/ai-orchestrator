@@ -18,6 +18,7 @@ export * from './security/secrets';
 export * from './memory/fingerprint';
 export * from './ci/classifier';
 export * from './approval/policy';
+export * from './approval/dependencies';
 export * from './events/types';
 export * from './events/bus';
 export * from './tools/tool-router';

@@ -68,6 +68,8 @@ export interface RunCheckpoint {
   pendingApprovalId: string | null;
   approvedActions: string[];
   notes: string[];
+  /** Total time the run spent PARKED waiting for a human (autopilot); excluded from the runtime stop condition. */
+  parkedMs?: number;
   /** Final result label, e.g. pr_ready, changes_ready, plan_ready, decomposed, deployed. */
   outcome: string | null;
 }

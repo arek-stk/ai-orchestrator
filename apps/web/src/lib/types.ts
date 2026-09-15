@@ -44,9 +44,11 @@ export const TASK_KINDS = ['feature', 'bugfix', 'refactor', 'docs', 'test', 'cho
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 export const GATED_ACTIONS = [
-  'production_deploy', 'database_migration', 'destructive_data', 'architecture_change', 'secrets_permissions', 'high_cost', 'external_service', 'critical_infrastructure',
+  'production_deploy', 'database_migration', 'destructive_data', 'architecture_change', 'secrets_permissions', 'high_cost', 'external_service', 'critical_infrastructure', 'dependency_addition',
 ] as const;
 export type GatedAction = (typeof GATED_ACTIONS)[number];
+/** Gates that cannot be switched off in the project settings (ADR-031). */
+export const HARD_GATED_ACTIONS: readonly GatedAction[] = ['dependency_addition'];
 
 export const EDITABLE_PROVIDER_KINDS = ['anthropic', 'openai', 'google', 'openai-compatible'] as const;
 export type ProviderKind = (typeof EDITABLE_PROVIDER_KINDS)[number] | 'mock';
@@ -262,6 +264,8 @@ export interface RunCheckpoint {
   pendingApprovalId: string | null;
   approvedActions: string[];
   notes: string[];
+  /** Time spent parked waiting for a human (autopilot); excluded from the runtime limit. */
+  parkedMs?: number;
   outcome: string | null;
 }
 
@@ -397,6 +401,32 @@ export interface Approval {
   sessionId: string | null;
   /** Explicit expiry of deferred approvals (session end plus grace, capped). */
   expiresAt: ISODate | null;
+  /** Typed findings of a `dependency_addition` approval (ADR-031); null or absent for other actions. */
+  dependencies?: DependencyApprovalDetails | null;
+}
+
+export type DependencyKind = 'package' | 'github_action' | 'mcp_server' | 'claude_plugin' | 'vscode_extension';
+
+export interface DependencyFinding {
+  kind: DependencyKind;
+  ecosystem: string;
+  name: string;
+  version: string | null;
+  file: string;
+  source: 'manifest' | 'lockfile' | 'config';
+  detail: string | null;
+  uncertain: boolean;
+  reason: string | null;
+  risk: 'high' | 'normal';
+  registryUrl: string | null;
+}
+
+export interface DependencyApprovalDetails {
+  fingerprint: string;
+  findings: DependencyFinding[];
+  totalFindings: number;
+  highRisk: boolean;
+  paths: string[];
 }
 
 // ---------------------------------------------------------------------------

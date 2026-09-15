@@ -10,6 +10,7 @@ import {
   Cloud,
   Compass,
   Database,
+  ExternalLink,
   Eye,
   FlaskConical,
   Hammer,
@@ -39,6 +40,7 @@ import type {
   Approval,
   ApprovalStatus,
   Decision,
+  DependencyApprovalDetails,
   DomainEvent,
   PipelineRun,
   ProjectListItem,
@@ -564,6 +566,139 @@ export function DecisionCard({ decision, projectName }: { decision: Decision; pr
 // Approvals
 // ---------------------------------------------------------------------------
 
+/** Hosts the server builds registry links for (ADR-031); anything else is not rendered as a link. */
+const REGISTRY_URL_PREFIXES = [
+  'https://www.npmjs.com/package/',
+  'https://pypi.org/project/',
+  'https://crates.io/crates/',
+  'https://pkg.go.dev/',
+  'https://rubygems.org/gems/',
+  'https://packagist.org/packages/',
+  'https://www.nuget.org/packages/',
+  'https://central.sonatype.com/artifact/',
+  'https://plugins.gradle.org/plugin/',
+  'https://github.com/',
+  'https://marketplace.visualstudio.com/items?itemName=',
+];
+
+const ECOSYSTEM_LABELS: Record<string, string> = {
+  npm: 'npm',
+  pypi: 'PyPI',
+  cargo: 'crates.io',
+  go: 'Go',
+  rubygems: 'RubyGems',
+  packagist: 'Packagist',
+  nuget: 'NuGet',
+  maven: 'Maven',
+  gradle_plugin: 'Gradle plugin',
+  github_actions: 'GitHub Actions',
+  docker: 'Docker',
+  mcp: 'MCP',
+  claude_plugins: 'Claude plugins',
+  vscode: 'VS Code',
+  unknown: 'Unknown',
+};
+
+const findingTh = 'whitespace-nowrap border-b border-line px-2 py-1.5 text-left text-xs font-medium text-ink-2';
+
+function safeRegistryUrl(url: string | null): string | null {
+  return url && REGISTRY_URL_PREFIXES.some((prefix) => url.startsWith(prefix)) ? url : null;
+}
+
+/** Reason prefix the server uses for lockfile entries that appeared while a manifest changed too (ADR-031). */
+const POSSIBLY_TRANSITIVE_REASON = 'Lockfile addition not declared in manifest (possibly transitive)';
+
+/** New dependencies waiting for approval: declared additions first, lockfile-only additions in their own group. */
+export function DependencyFindings({ details }: { details: DependencyApprovalDetails }) {
+  const hidden = details.totalFindings - details.findings.length;
+  const declared = details.findings.filter((finding) => finding.source !== 'lockfile');
+  const lockfile = details.findings.filter((finding) => finding.source === 'lockfile');
+  return (
+    <div className="mt-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-ink-2">
+          {details.totalFindings} new {details.totalFindings === 1 ? 'dependency' : 'dependencies'}
+        </span>
+        {details.highRisk ? <StatusBadge tone="critical" label="High risk" title="Runs inside developer or CI environments" /> : null}
+      </div>
+      {declared.length > 0 ? <DependencyFindingTable findings={declared} label="Declared in manifests and configs" /> : null}
+      {lockfile.length > 0 ? (
+        <div className={declared.length > 0 ? 'mt-3' : undefined}>
+          <p className="mb-1 text-xs font-medium text-ink-2">Only in lockfiles ({lockfile.length})</p>
+          <p className="mb-2 text-xs text-ink-2">
+            Not declared in a manifest in this change. Usually transitive packages of the change, but they are installed too, so review each one.
+          </p>
+          <DependencyFindingTable findings={lockfile} label="Lockfile-only dependencies" />
+        </div>
+      ) : null}
+      {hidden > 0 ? <p className="mt-2 text-xs text-ink-2">{hidden} more not shown; open the run for the full change set.</p> : null}
+    </div>
+  );
+}
+
+function DependencyFindingTable({ findings, label }: { findings: DependencyApprovalDetails['findings']; label: string }) {
+  return (
+      <div className="-mx-2 overflow-x-auto" role="region" aria-label={label} tabIndex={0}>
+        <table className="w-full border-collapse">
+          <thead>
+            <tr>
+              <th scope="col" className={findingTh}>Name</th>
+              <th scope="col" className={findingTh}>Version</th>
+              <th scope="col" className={findingTh}>Ecosystem</th>
+              <th scope="col" className={findingTh}>File</th>
+              <th scope="col" className={findingTh}>Registry</th>
+            </tr>
+          </thead>
+          <tbody>
+            {findings.map((finding, index) => {
+              const url = safeRegistryUrl(finding.registryUrl);
+              return (
+                <tr key={`${finding.file}:${finding.ecosystem}:${finding.name}:${index}`}>
+                  <td className={td}>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Mono className="break-all">{finding.name}</Mono>
+                      {finding.risk === 'high' ? <StatusBadge tone="critical" label="High risk" title={humanize(finding.kind)} /> : null}
+                      {finding.uncertain ? (
+                        <StatusBadge tone="warning" label={finding.source === 'lockfile' ? 'Cannot inspect' : 'Not parsed'} />
+                      ) : finding.source === 'lockfile' ? (
+                        <StatusBadge
+                          tone="serious"
+                          label={finding.reason?.startsWith(POSSIBLY_TRANSITIVE_REASON) ? 'Possibly transitive' : 'Lockfile only'}
+                          title="Not declared in a manifest in this change"
+                        />
+                      ) : null}
+                    </div>
+                    {finding.detail ? <p className="mt-0.5 text-xs text-ink-2">{finding.detail}</p> : null}
+                    {finding.reason ? <p className="mt-0.5 text-xs text-ink-2">{finding.reason}</p> : null}
+                  </td>
+                  <td className={td}>{finding.version ? <Mono className="break-all">{finding.version}</Mono> : <span className="text-ink-2">n/a</span>}</td>
+                  <td className={td}>
+                    {ECOSYSTEM_LABELS[finding.ecosystem] ?? humanize(finding.ecosystem)}
+                    <span className="block text-xs text-ink-2">{humanize(finding.kind)}</span>
+                  </td>
+                  <td className={td}>
+                    <Mono className="break-all">{finding.file}</Mono>
+                  </td>
+                  <td className={td}>
+                    {url ? (
+                      <TextLink href={url} external className="inline-flex items-center gap-1 whitespace-nowrap">
+                        Open
+                        <ExternalLink aria-hidden="true" size={11} />
+                        <span className="sr-only">{`${finding.name} registry page (opens in a new tab)`}</span>
+                      </TextLink>
+                    ) : (
+                      <span className="text-ink-2">n/a</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+  );
+}
+
 export function ApprovalCard({ approval, projectName, onDecided }: { approval: Approval; projectName?: string; onDecided?: () => void }) {
   const { user } = useSession();
   const [comment, setComment] = useState('');
@@ -622,7 +757,9 @@ export function ApprovalCard({ approval, projectName, onDecided }: { approval: A
         </div>
       </header>
       <p className="mt-3 text-[13px] text-ink">{approval.reason}</p>
-      {Object.keys(approval.details ?? {}).length > 0 ? (
+      {approval.dependencies ? (
+        <DependencyFindings details={approval.dependencies} />
+      ) : Object.keys(approval.details ?? {}).length > 0 ? (
         <div className="mt-3">
           <JsonDetails value={approval.details} summary="Request details" />
         </div>

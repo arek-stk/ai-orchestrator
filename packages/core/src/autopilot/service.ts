@@ -171,7 +171,11 @@ export class AutopilotService {
     return session;
   }
 
-  /** Graceful stop: no new work; in-flight runs continue with the project's own autonomy and gates. */
+  /**
+   * Graceful stop: no new work starts. In-flight session runs keep the session's autonomy cap and hard gates until they
+   * finish; their new approvals block (WAITING) instead of parking. Only a kill or a human `resume()` of a paused run
+   * (which detaches it from the ended session) changes that.
+   */
   async stop(id: string, actor: AutopilotActor, reason: AutopilotStopReason = 'manual', detail = `stopped by ${actor.login}`): Promise<AutopilotSession | null> {
     const session = await this.deps.sessions.finish(id, { status: 'ended', stopReason: reason, stopDetail: detail, stoppedBy: actor.login, endedAt: this.deps.clock.now() });
     if (!session) return null;

@@ -379,6 +379,63 @@ Format: context → decision → consequences → status.
 * **Consequences:** Feature areas can grow without touching the core route file.
 * **Status:** Accepted (2026-09-14)
 
+## ADR-031 — Every new dependency requires human approval
+* **Context:** Third-party code is the largest supply-chain risk the orchestrator can introduce: typosquatted or
+  "slopsquatted" packages (names a model hallucinates and an attacker then registers), compromised maintainers, and
+  GitHub Actions, MCP servers or editor/Claude plugins that run with developer or CI credentials. Agents already
+  propose new dependencies in normal tasks; the planned Plugin Scout and the autopilot will propose more. On
+  2026-09-14 the owner decided that every new dependency needs a human, whatever proposes it and at every autonomy
+  level (`docs/plans/plugin-scout.md` §9.3).
+* **Decision:**
+  * New gated action `dependency_addition` with a hard rule in `requiresApproval`: it always requires approval at
+    autonomy levels 0–4 (no level exception, unlike `production_deploy`) and regardless of the project gate
+    configuration. `ProjectSettingsSchema` rejects disabling it, stored settings are normalised to enabled, and the
+    settings UI shows it locked.
+  * `detectDependencyAdditions` (IO-free, `packages/core/src/approval/dependencies.ts`) compares the base and new
+    content of changed files and returns structured findings (kind, ecosystem, name, requested version, file).
+    Covered: `package.json` (dependencies, devDependencies, optional, peer; aliases and Git/URL sources),
+    `requirements*.txt` (including new package indexes), `pyproject.toml` (PEP 621, optional and dependency groups,
+    build requires, Poetry, uv, PDM), `Pipfile`, `Cargo.toml`, `go.mod`, `Gemfile`, `composer.json`, `*.csproj` and
+    NuGet props, `pom.xml`, `build.gradle(.kts)` and Gradle version catalogs, plus `package.json`
+    `overrides`/`resolutions`/`pnpm.overrides` and Cargo `[patch]`/`[replace]` that swap a package or its source, and
+    files a changed requirements file includes with `-r`; workflow and composite-action `uses:`; `.mcp.json` (identity
+    is the launched package, image or URL); `.claude/settings.json` plugins, marketplaces and MCP enablement;
+    `.vscode/extensions.json` recommendations. Version bumps and removals are not gated; they stay with the
+    Dependabot/review flow.
+  * Lockfiles are always parsed and diffed, whether or not a manifest changed in the same change set (review fix: a
+    manifest bump must not hide a package smuggled into the lockfile). Every installed package counts, not only direct
+    dependencies: `package-lock.json`/`npm-shrinkwrap.json` v1, v2 (both sections) and v3 including nested
+    `node_modules` entries, `pnpm-lock.yaml` importers and packages, `bun.lock` workspaces and packages, `yarn.lock`,
+    `Gemfile.lock` specs, NuGet `packages.lock.json` direct and transitive entries, `Cargo.lock`,
+    `poetry.lock`/`uv.lock`/`pdm.lock`, `Pipfile.lock`, `composer.lock`, `go.sum` and `gradle.lockfile`. A package
+    downloaded from somewhere other than the default registry (npm, Cargo, gems) carries its source in the identity,
+    so a swap to a fork counts as an addition. A lockfile entry is dropped only when a manifest addition of the same
+    package in this change set covers it and the lockfile does not install it from another source. Remaining entries
+    are reported with a label: "Added to the lockfile without a matching manifest entry" when no manifest of the
+    ecosystem changed in the lockfile's tree, otherwise "Lockfile addition not declared in manifest (possibly
+    transitive)". Approvals list declared additions first and lockfile findings as their own group.
+  * Parsers are linear scanners without backtracking regular expressions. Unparsable or oversized manifests count as
+    a possible addition, with the reason stated, and are gated. A binary or unparsable lockfile (`bun.lockb`) that
+    changed is reported as "possible addition, cannot inspect", also when only an existing dependency was bumped.
+  * The approval lists the findings with a registry link built from a fixed per-ecosystem URL template and a
+    validated name (rebuilt when the API reads it, never taken from repository text), plus a risk hint: GitHub
+    Actions, MCP servers, Claude plugins and VS Code extensions are high risk. The approvals API adds a typed
+    `dependencies` field; `details` is unchanged for existing clients.
+  * Enforcement: after IMPLEMENT (with the other change-set gates), in TEST before a sandbox run, and in COMMIT before
+    anything is published. The tool router backs this up with an `approvalCheck` on `git.commit` and on `test.run`
+    with `install`. The run waits like for any other gate, and approval expiry (ADR-023) applies.
+  * Decision memory: an approval grants `dependency_addition:<fingerprint>` for exactly the approved, sorted set of
+    findings, stored in the run checkpoint. A change set that adds anything else (or another version) needs a new
+    approval; grants are never reused by other runs or tasks.
+* **Consequences:** Relation to ADR-013: auto-accepted health-scan proposals still hit this gate when their change set
+  adds a dependency; auto-acceptance never implies dependency approval. A new workflow `uses:` needs both the
+  `critical_infrastructure` and the `dependency_addition` approval. New transitive packages appear in the approval as
+  labelled lockfile findings, so a legitimate new direct dependency usually brings a group of them; a binary lockfile
+  is gated on every change. Hooks, devcontainer features, `[tool.uv.sources]`/package indexes in `pyproject.toml`,
+  `.gemspec` dependencies, pnpm tarball sources and includes of requirements files that are not in the change set are
+  not covered yet.
+* **Status:** Accepted (2026-09-14)
+
 ## ADR-034 — Autopilot sessions, stage 1: bounded away mode with parked approvals (refines ADR-023)
 * **Context:** The owner wants work to continue while nobody is watching (`docs/plans/autopilot.md`). Today every
   approval parks its run in `WAITING`, which holds a concurrency slot, so two open approvals stall a project with
@@ -396,7 +453,7 @@ Format: context → decision → consequences → status.
     3). It is computed per step from the run's `session_id` and never written to `projects.autonomy_level`, so a crash
     cannot leave a project changed. Merges and deploys (level 4) are unreachable in a session.
   * **Gates only tighten.** Every gated action is forced on for session runs, whatever the project settings say. This
-    includes `dependency_addition` (ADR-031) once it is a gated action. A run keeps the capped view and hard gates
+    includes `dependency_addition` (ADR-031), which is also hard outside sessions. A run keeps the capped view and hard gates
     until it finishes, also after the session ended. A human resume of a paused run detaches it from an ended session.
   * **Parked approvals.** An approval requested while the session is active is `mode = deferred`. The run goes to the
     new status `PARKED`, which holds no concurrency slot and does not mark the project `WAITING`. Only a human decides:

@@ -63,6 +63,10 @@ const responders: Record<string, (request: StructuredRequest<unknown>) => unknow
     const changes = [{ path: `src/${slug}.ts`, action: 'create', content: 'export const feature = 1;\n', rationale: 'feature' }];
     // Tasks with "index" in the title add a migration, which hits the database_migration gate.
     if (title.includes('index')) changes.push({ path: `db/migrations/${slug}.sql`, action: 'create', content: 'CREATE INDEX idx ON products(name);\n', rationale: 'index' });
+    // Tasks with "dependency" in the title add a package, which hits the hard dependency_addition gate (ADR-031).
+    if (title.includes('dependency')) {
+      changes.push({ path: 'package.json', action: 'create', content: `${JSON.stringify({ name: 'shop', dependencies: { zod: '^4.1.0' } }, null, 2)}\n`, rationale: 'schema validation' });
+    }
     return { summary: 'feature', changes, notes: [], confidence: 0.8 };
   },
   test_output: (req) => ({
@@ -374,6 +378,38 @@ describe('autopilot sessions in the pipeline', () => {
     const [runId] = (await h.orchestrator.tick()).started;
     expect(await h.drive(runId!)).toEqual({ next: 'wait', resumeAt: null });
     expect(await h.store.approvals.list({ status: 'pending' })).toEqual([expect.objectContaining({ action: 'database_migration', mode: 'deferred' })]);
+  });
+
+  it('keeps hard gates hard: a session run that adds a dependency parks for a human and is never auto-approved', async () => {
+    const h = await harness({ settings: (s) => void (s.approvalGates.dependency_addition = false) });
+    const task = await h.createTask({ title: 'Add schema dependency', goal: 'Validate product input with a schema library' });
+    const session = await h.startSession();
+    const [runId] = (await h.orchestrator.tick()).started;
+    expect(await h.drive(runId!)).toEqual({ next: 'wait', resumeAt: null });
+
+    const run = (await h.store.runs.get(runId!))!;
+    expect(run).toMatchObject({ taskId: task.id, status: 'PARKED', sessionId: session.id });
+    const [approval] = await h.store.approvals.list({ status: 'pending' });
+    expect(approval).toMatchObject({ action: 'dependency_addition', mode: 'deferred', sessionId: session.id, runId: runId, decidedBy: null });
+    expect(run.checkpoint.approvedActions.some((grant) => grant.startsWith('dependency_addition'))).toBe(false);
+    expect(h.github.pulls(repo)).toHaveLength(0);
+
+    // Nothing in the session resolves it: further ticks, steps, the session's end and restart recovery leave it parked.
+    await h.orchestrator.tick();
+    expect(await h.orchestrator.step(runId!)).toEqual({ next: 'wait', resumeAt: null });
+    h.advance(11 * HOUR);
+    expect(await h.autopilot.tick()).toEqual({ stopped: 1, killed: 0 });
+    h.restart();
+    await h.autopilot.recover();
+    expect((await h.store.approvals.get(approval!.id))!).toMatchObject({ status: 'pending', decidedBy: null });
+    expect((await h.store.runs.get(runId!))!.status).toBe('PARKED');
+    expect(h.github.pulls(repo)).toHaveLength(0);
+
+    // Only a human decision releases the run.
+    await h.store.approvals.decide(approval!.id, 'approved', 'usr_owner', null);
+    expect(await h.orchestrator.onApprovalDecided(approval!.id)).toEqual({ next: 'continue' });
+    expect(await h.drive(runId!)).toMatchObject({ next: 'done', status: 'SUCCEEDED' });
+    expect(h.github.pulls(repo)).toHaveLength(1);
   });
 
   it('a graceful stop only removes autonomy: in-flight session runs keep hard gates, but approvals block again', async () => {

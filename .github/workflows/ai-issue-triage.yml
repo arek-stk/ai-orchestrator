@@ -40,17 +40,17 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github/prompts
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
       - name: Install Copilot CLI
-        run: npm install -g @github/copilot
+        run: npm install -g --ignore-scripts @github/copilot@1.0.83
 
       # Untrusted issue text is passed through files, never interpolated into shell commands.
       - name: Write issue content
@@ -64,7 +64,7 @@ jobs:
 
       - name: Classify with GitHub Copilot
         id: ai
-        uses: actions/ai-inference@v3
+        uses: actions/ai-inference@2c43c91ae16266ca159d311430343c67a5ffa222 # v3
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         with:

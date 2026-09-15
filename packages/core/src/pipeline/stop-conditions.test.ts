@@ -32,6 +32,12 @@ describe('stop conditions', () => {
     expect(checkStopConditions(counters(), limits, later)).toMatchObject({ stop: true, reason: 'max_runtime' });
   });
 
+  it('does not count time spent parked for a human towards the runtime limit', () => {
+    const later = new Date(start.getTime() + limits.maxRuntimeMs + 48 * 60 * 60 * 1000);
+    expect(checkStopConditions(counters({ parkedMs: 48 * 60 * 60 * 1000 + 1 }), limits, later)).toEqual({ stop: false });
+    expect(checkStopConditions(counters({ parkedMs: 48 * 60 * 60 * 1000 }), limits, later)).toMatchObject({ stop: true, reason: 'max_runtime' });
+  });
+
   it('allows exactly maxDebugAttempts debug attempts', () => {
     expect(canAttemptDebug({ debugAttempts: 2 }, { maxDebugAttempts: 3 })).toBe(true);
     expect(canAttemptDebug({ debugAttempts: 3 }, { maxDebugAttempts: 3 })).toBe(false);

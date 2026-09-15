@@ -136,26 +136,37 @@ export function buildAutopilotDigest(input: AutopilotDigestInput, now: Date): Au
     parkedApprovals: parkedApprovals.slice(0, MAX_ITEMS),
     failures: failures.slice(0, MAX_ITEMS),
     decisions: decisions.slice(0, MAX_ITEMS),
-    costs: { totalUsd, budgetUsd: session.budgetUsd, budgetUsedPct: session.budgetUsd > 0 ? Math.min(100, Math.round((totalUsd / session.budgetUsd) * 1000) / 10) : 0, byProject },
+    costs: { totalUsd, budgetUsd: session.budgetUsd, budgetUsedPct: budgetPct(totalUsd, session.budgetUsd), byProject },
   };
 }
 
-/** Removes everything outside the viewer's projects (per-project ACL, ADR-022). null = everything visible. */
+function budgetPct(totalUsd: number, budgetUsd: number): number {
+  return budgetUsd > 0 ? Math.min(100, Math.round((totalUsd / budgetUsd) * 1000) / 10) : 0;
+}
+
+/**
+ * Removes everything outside the viewer's projects (per-project ACL, ADR-022). null = everything visible.
+ * Every aggregate is recomputed from the visible projects only: counts, spend and the budget share. The stop detail is
+ * a session-wide aggregate (e.g. total spend, failure streak across projects), so a partial view omits it.
+ */
 export function filterAutopilotDigest(digest: AutopilotDigest, visible: ReadonlySet<string> | null): AutopilotDigest {
   if (visible === null) return digest;
   const keep = <T extends { projectId: string }>(items: T[]) => items.filter((item) => visible.has(item.projectId));
+  const projects = keep(digest.projects);
+  if (projects.length === digest.projects.length) return digest;
   const pullRequests = keep(digest.pullRequests);
   const decisions = keep(digest.decisions);
   const byProject = keep(digest.costs.byProject);
+  const totalUsd = money(byProject.reduce((sum, c) => sum + c.costUsd, 0));
   return {
     ...digest,
+    stop: { ...digest.stop, detail: null },
     pullRequests,
     parkedApprovals: keep(digest.parkedApprovals),
     failures: keep(digest.failures),
     decisions,
-    // Totals of hidden projects would leak their activity; restricted viewers see the totals of their projects only.
-    projects: keep(digest.projects),
-    totals: { ...sumCounts(keep(digest.projects)), pullRequests: pullRequests.length, decisions: decisions.length },
-    costs: { ...digest.costs, byProject, totalUsd: money(byProject.reduce((sum, c) => sum + c.costUsd, 0)) },
+    projects,
+    totals: { ...sumCounts(projects), pullRequests: pullRequests.length, decisions: decisions.length },
+    costs: { budgetUsd: digest.costs.budgetUsd, byProject, totalUsd, budgetUsedPct: budgetPct(totalUsd, digest.costs.budgetUsd) },
   };
 }
