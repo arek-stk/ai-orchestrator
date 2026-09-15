@@ -3,9 +3,13 @@ name: Milestone release
 # Milestones named "vX.Y — …" drive releases (ADR-012 addendum). Once such a milestone has no open items, the
 # release-please PR is retargeted to X.Y.0 if needed and made ready to merge; after the release is published the
 # milestone is closed.
-# Safe mode (default): nothing is merged automatically; a maintainer merges the release and Release-As PRs.
-# Full mode: repository variable AUTO_RELEASE_MERGE=true enables squash auto-merge on those PRs.
-# Pause: repository variable AUTO_RELEASE=false or the release:hold label on the release PR.
+# Modes (repository variables; only the exact value true counts):
+# - Safe (default): comments only. No pull requests, no CI dispatch for bot PRs, no auto-merge; a maintainer retargets,
+#   runs CI and merges.
+# - Prepare (AUTO_RELEASE_PREPARE=true): also opens the Release-As PR and dispatches CI for bot PRs; a maintainer merges.
+# - Full (AUTO_RELEASE_MERGE=true, implies prepare): also enables squash auto-merge on those PRs.
+# Pause: repository variable AUTO_RELEASE=false or the release:hold label on the release PR. While paused nothing is
+# dispatched, created or merged; only auto-merge enabled by this workflow is withdrawn.
 # pull_request_target is safe here: jobs check out the default branch only and never run pull request code.
 on:
   issues:
@@ -55,15 +59,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
         run: node .github/scripts/milestone-release/run.mjs assign
 
   # Issue and pull request events can come from anyone. A read-only job decides whether the write-capable release job
-  # may start: a milestone must be involved and the actor needs write, maintain or admin permission.
+  # may start: a milestone must be involved (or release:hold was added) and the actor needs write, maintain or admin
+  # permission. Any failure leaves the output unset, which skips the release job.
   gate:
     name: Check event trust
     if: >-
       github.event_name == 'issues' ||
-      (github.event_name == 'pull_request_target' && github.event.action == 'closed')
+      (github.event_name == 'pull_request_target' && (github.event.action == 'closed' ||
+        (github.event.action == 'labeled' && github.event.label.name == 'release:hold')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -85,6 +92,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name || '' }}
           ACTOR: ${{ github.actor }}
           ITEM_MILESTONE: ${{ github.event.issue.milestone.number || github.event.pull_request.milestone.number || '' }}
           EVENT_MILESTONE: ${{ github.event.milestone.number || '' }}
@@ -118,10 +127,11 @@ jobs:
         with:
           node-version: 24
 
-      - name: Request CI, retarget, prepare or auto-merge, close milestones
+      - name: Evaluate milestones and apply the plan for the configured mode
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
+          AUTO_RELEASE_PREPARE: ${{ vars.AUTO_RELEASE_PREPARE }}
           AUTO_RELEASE_MERGE: ${{ vars.AUTO_RELEASE_MERGE }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: node .github/scripts/milestone-release/run.mjs release

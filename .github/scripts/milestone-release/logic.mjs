@@ -74,12 +74,45 @@ export function isFullAutoMerge(autoReleaseMerge) {
 }
 
 /**
+ * Release mode from the repository variables; any value other than exactly `true` counts as unset.
+ * - `safe` (default): no pull requests, no CI dispatch, no auto-merge. The workflow only comments, annotates release
+ *   notes and closes milestones; a maintainer retargets, runs CI and merges.
+ * - `prepare` (`AUTO_RELEASE_PREPARE=true`): additionally opens the Release-As PR and dispatches CI for bot PRs.
+ * - `full` (`AUTO_RELEASE_MERGE=true`, implies prepare): additionally enables squash auto-merge on those PRs.
+ */
+export function releaseMode({ autoReleasePrepare, autoReleaseMerge } = {}) {
+  if (isFullAutoMerge(autoReleaseMerge)) return 'full';
+  if (autoReleasePrepare === 'true') return 'prepare';
+  return 'safe';
+}
+
+/**
+ * Repository permission of the event actor, failing closed: an invalid login (including `[bot]` accounts), a missing
+ * collaborator record or any lookup error yields `none`. `lookup(login)` returns the collaborator permission response.
+ */
+export async function resolveActorPermission(actor, lookup) {
+  if (typeof actor !== 'string' || !/^[A-Za-z0-9-]{1,39}$/.test(actor)) {
+    return { permission: 'none', reason: 'actor is not a user login' };
+  }
+  try {
+    const result = await lookup(actor);
+    const role = result?.role_name ?? result?.permission;
+    return typeof role === 'string' && role !== ''
+      ? { permission: role, reason: 'looked up' }
+      : { permission: 'none', reason: 'no permission record' };
+  } catch (error) {
+    return { permission: 'none', reason: `permission lookup failed: ${safeLog(error?.message ?? error)}` };
+  }
+}
+
+/**
  * Whether an event may start the write-capable release job. Schedule, manual dispatch (write access required) and
  * milestone events (write access required) are trusted. Issue and pull request events from the public only count when
- * a milestone is involved and the actor has write, maintain or admin permission; everything else waits for the
- * schedule. `needsPermission` asks the caller to look the actor up and call again.
+ * a milestone is involved (or the `release:hold` label was added) and the actor has write, maintain or admin
+ * permission; everything else waits for the schedule. `needsPermission` asks the caller to look the actor up and call
+ * again.
  */
-export function eventGate({ eventName, itemMilestone, eventMilestone, actorPermission }) {
+export function eventGate({ eventName, action, label, itemMilestone, eventMilestone, actorPermission }) {
   if (TRUSTED_EVENTS.includes(eventName)) {
     return { proceed: true, needsPermission: false, reason: `${eventName} events are trusted` };
   }
@@ -87,7 +120,9 @@ export function eventGate({ eventName, itemMilestone, eventMilestone, actorPermi
     return { proceed: false, needsPermission: false, reason: `unexpected event ${eventName}` };
   }
   const present = (value) => typeof value === 'string' ? value.trim() !== '' : value != null;
-  if (!present(itemMilestone) && !present(eventMilestone)) {
+  // Adding the hold label should withdraw bot auto-merge promptly instead of waiting for the schedule.
+  const holdAdded = eventName === 'pull_request_target' && action === 'labeled' && label === HOLD_LABEL;
+  if (!holdAdded && !present(itemMilestone) && !present(eventMilestone)) {
     return { proceed: false, needsPermission: false, reason: 'no milestone involved' };
   }
   if (actorPermission == null) {
@@ -175,6 +210,43 @@ export function readyMarker(parsed) {
   return `<!-- milestone-release:ready:${parsed.key} -->`;
 }
 
+export function retargetMarker(parsed) {
+  return `<!-- milestone-release:retarget:${parsed.key} -->`;
+}
+
+/** One-time comment on the release PR once it targets the milestone version (safe and prepare mode). */
+export function readyCommentBody(parsed, milestoneUrl, mode) {
+  const ci =
+    mode === 'safe'
+      ? 'Safe mode does not run CI for bot pull requests: if the required check `Typecheck and test` is waiting, approve the pending workflow runs on this PR or run the CI workflow on its branch, then merge once it passes.'
+      : 'CI was requested for its head commit; merge once the required checks pass. Set `AUTO_RELEASE_MERGE=true` for automatic merging.';
+  return [
+    readyMarker(parsed),
+    `Milestone [${parsed.key}](${milestoneUrl}) is complete and this PR targets ${parsed.version}, so it is ready for a maintainer to merge.`,
+    '',
+    ci,
+  ].join('\n');
+}
+
+/** One-time safe-mode comment on the release PR explaining how a maintainer retargets it to the milestone version. */
+export function retargetCommentBody(parsed, milestoneUrl, prVersion) {
+  const branch = `chore/release-as-${parsed.version}`;
+  return [
+    retargetMarker(parsed),
+    `Milestone [${parsed.key}](${milestoneUrl}) is complete, but this release PR targets ${prVersion ?? 'another version'} instead of ${parsed.version}.`,
+    '',
+    `Safe mode does not open pull requests. To retarget, merge a commit with a \`Release-As: ${parsed.version}\` footer into the default branch, for example:`,
+    '',
+    '```sh',
+    `git switch -c ${branch} origin/main`,
+    `git commit --allow-empty -m "chore(release): release ${parsed.version} for milestone ${parsed.key}" -m "Release-As: ${parsed.version}"`,
+    `git push -u origin ${branch}`,
+    '```',
+    '',
+    `Open a pull request from \`${branch}\` and squash-merge it with the \`Release-As: ${parsed.version}\` line kept in the commit message; release-please then updates this PR. Set \`AUTO_RELEASE_PREPARE=true\` to let the workflow open that pull request instead.`,
+  ].join('\n');
+}
+
 /** Release notes stay release-please's changelog; the milestone link is appended once. */
 export function releaseNotesWithMilestone(body, parsed, milestoneUrl) {
   const marker = milestoneMarker(parsed);
@@ -202,23 +274,43 @@ function botAutoMerge(pr) {
  *   milestone: { number, title, state, open_issues, closed_issues, html_url },
  *   currentVersion: manifest version on the default branch,
  *   release: published release for the milestone tag or null,
- *   releasePr: open release-please PR { number, title, labels, autoMerge: { enabledBy } | null, readyCommented } or null,
+ *   releasePr: open release-please PR
+ *     { number, title, labels, autoMerge: { enabledBy } | null, readyCommented, retargetCommented } or null,
  *   ciSatisfied: required check passed for the release PR head SHA,
  *   mergedReleasePr: merged release PR for the milestone version { number, commented } or null,
  *   releaseAsPr: PR from the release-as branch { number, state, merged, autoMerge } or null,
  *   autoRelease: value of the AUTO_RELEASE variable (global pause),
+ *   autoReleasePrepare: value of the AUTO_RELEASE_PREPARE variable (prepare mode only when exactly 'true'),
  *   autoReleaseMerge: value of the AUTO_RELEASE_MERGE variable (full mode only when exactly 'true'),
  * }
- * Returns { status, reason, actions: [{ type, ... }] }.
+ * Returns { status, reason, mode, actions: [{ type, ... }] }. Only full mode ever returns enable-* actions and only
+ * prepare and full mode return open-release-as-pr.
  */
 export function planMilestone(state) {
+  const mode = releaseMode(state);
+  const result = planForMode(state, mode);
+  return { ...result, mode };
+}
+
+function planForMode(state, mode) {
   const { milestone, currentVersion, release, releasePr, mergedReleasePr, releaseAsPr, autoRelease } = state;
-  const fullAuto = isFullAutoMerge(state.autoReleaseMerge);
+  const fullAuto = mode === 'full';
   const parsed = parseMilestoneVersion(milestone.title);
   if (!parsed) return { status: 'ignored', reason: 'not a vX.Y release milestone', actions: [] };
   if (milestone.state !== 'open') return { status: 'ignored', reason: 'milestone is closed', actions: [] };
 
+  // Withdrawing auto-merge that this workflow enabled is allowed in every mode and while paused: it only ever makes
+  // the automation do less. Auto-merge enabled by a human is never touched.
   const disableBotAutoMerge = botAutoMerge(releasePr) ? [{ type: 'disable-auto-merge', pr: releasePr.number }] : [];
+  const disableReleaseAsAutoMerge =
+    releaseAsPr?.state === 'open' && botAutoMerge(releaseAsPr)
+      ? [{ type: 'disable-release-as-auto-merge', pr: releaseAsPr.number }]
+      : [];
+  const withdrawAll = [...disableBotAutoMerge, ...disableReleaseAsAutoMerge];
+
+  // The pause wins over everything else, including finishing an already published release.
+  const hold = holdReason({ autoRelease, releasePrLabels: releasePr?.labels ?? [] });
+  if (hold) return { status: 'held', reason: hold, actions: withdrawAll };
 
   if (release && !release.draft) {
     if (milestone.open_issues > 0) {
@@ -242,32 +334,33 @@ export function planMilestone(state) {
   if (!isMilestoneComplete(milestone)) {
     const reason =
       milestone.closed_issues === 0 ? 'milestone has no closed items yet' : `${milestone.open_issues} open item(s) left`;
-    return { status: 'waiting', reason, actions: disableBotAutoMerge };
+    return { status: 'waiting', reason, actions: withdrawAll };
   }
 
   if (compareVersions(parsed.version, currentVersion) <= 0) {
     return {
       status: 'blocked',
       reason: `milestone version ${parsed.version} is not newer than the current release ${currentVersion}; rename the milestone`,
-      actions: disableBotAutoMerge,
+      actions: withdrawAll,
     };
   }
 
-  const hold = holdReason({ autoRelease, releasePrLabels: releasePr?.labels ?? [] });
-  if (hold) return { status: 'held', reason: hold, actions: disableBotAutoMerge };
-
   if (!releasePr) {
-    return { status: 'waiting', reason: 'no open release PR yet (nothing releasable since the last release)', actions: [] };
+    return {
+      status: 'waiting',
+      reason: 'no open release PR yet (nothing releasable since the last release)',
+      actions: disableReleaseAsAutoMerge,
+    };
   }
 
   const prVersion = parseReleasePrVersion(releasePr.title);
   if (prVersion === parsed.version) {
     if (!fullAuto) {
-      const actions = [...disableBotAutoMerge];
+      const actions = [...withdrawAll];
       if (!releasePr.readyCommented) actions.push({ type: 'comment-release-ready', pr: releasePr.number });
       return {
         status: state.ciSatisfied ? 'ready' : 'awaiting-ci',
-        reason: `safe mode: release PR targets ${parsed.version} and waits for a maintainer to merge it`,
+        reason: `${mode} mode: release PR targets ${parsed.version} and waits for a maintainer to merge it`,
         actions,
       };
     }
@@ -292,11 +385,20 @@ export function planMilestone(state) {
   if (releaseAsPr) {
     const actions = [...disableBotAutoMerge];
     if (fullAuto && !releaseAsPr.autoMerge) actions.push({ type: 'enable-release-as-auto-merge', pr: releaseAsPr.number });
-    if (!fullAuto && botAutoMerge(releaseAsPr)) actions.push({ type: 'disable-release-as-auto-merge', pr: releaseAsPr.number });
+    if (!fullAuto) actions.push(...disableReleaseAsAutoMerge);
     const reason = fullAuto
       ? `waiting for Release-As PR #${releaseAsPr.number}`
-      : `safe mode: Release-As PR #${releaseAsPr.number} waits for a maintainer to merge it`;
+      : `${mode} mode: Release-As PR #${releaseAsPr.number} waits for a maintainer to merge it`;
     return { status: 'retargeting', reason, actions };
+  }
+  if (mode === 'safe') {
+    const actions = [...disableBotAutoMerge];
+    if (!releasePr.retargetCommented) actions.push({ type: 'comment-retarget-instructions', pr: releasePr.number });
+    return {
+      status: 'needs-retarget',
+      reason: `safe mode: release PR targets ${prVersion ?? 'an unknown version'}; a maintainer merges a Release-As ${parsed.version} commit`,
+      actions,
+    };
   }
   return {
     status: 'retargeting',

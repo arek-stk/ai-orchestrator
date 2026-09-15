@@ -205,7 +205,7 @@ describe('CI dispatch and hold switches', () => {
     expect(logic.eventGate({ eventName: 'pull_request_target', itemMilestone: '1', actorPermission: 'write' }).proceed).toBe(
       true,
     );
-    for (const permission of ['triage', 'read', 'none']) {
+    for (const permission of ['triage', 'read', 'none', 'custom-role', '']) {
       expect(logic.eventGate({ eventName: 'issues', itemMilestone: '1', actorPermission: permission })).toMatchObject({
         proceed: false,
         needsPermission: false,
@@ -213,11 +213,64 @@ describe('CI dispatch and hold switches', () => {
     }
   });
 
+  it('lets a trusted actor adding release:hold start the job so bot auto-merge is withdrawn promptly', () => {
+    const labeled = { eventName: 'pull_request_target', action: 'labeled', label: 'release:hold' };
+    expect(logic.eventGate(labeled)).toMatchObject({ proceed: false, needsPermission: true });
+    expect(logic.eventGate({ ...labeled, actorPermission: 'write' }).proceed).toBe(true);
+    expect(logic.eventGate({ ...labeled, actorPermission: 'triage' }).proceed).toBe(false);
+    expect(logic.eventGate({ ...labeled, label: 'release:holdx' }).reason).toBe('no milestone involved');
+    expect(logic.eventGate({ ...labeled, action: 'unlabeled' }).reason).toBe('no milestone involved');
+    expect(logic.eventGate({ ...labeled, eventName: 'issues' }).reason).toBe('no milestone involved');
+  });
+
+  it('resolves the actor permission failing closed', async () => {
+    const calls: string[] = [];
+    const lookup = (response: unknown) => async (actor: string) => {
+      calls.push(actor);
+      return response;
+    };
+    await expect(logic.resolveActorPermission('arek-stk', lookup({ role_name: 'admin', permission: 'admin' }))).resolves.toMatchObject({
+      permission: 'admin',
+    });
+    await expect(logic.resolveActorPermission('octo', lookup({ permission: 'write' }))).resolves.toMatchObject({
+      permission: 'write',
+    });
+    // Collaborator not found (404 → null) or an empty record.
+    await expect(logic.resolveActorPermission('octo', lookup(null))).resolves.toMatchObject({ permission: 'none' });
+    await expect(logic.resolveActorPermission('octo', lookup({ role_name: '' }))).resolves.toMatchObject({ permission: 'none' });
+    // API errors never grant access.
+    const failing = async () => {
+      throw new Error('HTTP 502\n::error::boom');
+    };
+    const failed = await logic.resolveActorPermission('octo', failing);
+    expect(failed.permission).toBe('none');
+    expect(failed.reason).not.toMatch(/\n|::/);
+    // Bots, empty and path-like logins are rejected without a lookup.
+    calls.length = 0;
+    for (const actor of ['github-actions[bot]', '', undefined, '../admin', 'a/b', 'x'.repeat(40)]) {
+      await expect(logic.resolveActorPermission(actor, lookup({ role_name: 'admin' }))).resolves.toMatchObject({
+        permission: 'none',
+      });
+    }
+    expect(calls).toEqual([]);
+  });
+
   it('enables full auto-merge only for exactly "true"', () => {
     expect(logic.isFullAutoMerge('true')).toBe(true);
     for (const value of [undefined, '', 'TRUE', ' true', 'yes', '1', 'false']) {
       expect(logic.isFullAutoMerge(value)).toBe(false);
     }
+  });
+
+  it('derives the release mode, defaulting to safe', () => {
+    expect(logic.releaseMode()).toBe('safe');
+    expect(logic.releaseMode({})).toBe('safe');
+    for (const value of [undefined, '', 'TRUE', ' true', 'yes', '1', 'false']) {
+      expect(logic.releaseMode({ autoReleasePrepare: value, autoReleaseMerge: value })).toBe('safe');
+      expect(logic.releaseMode({ autoReleasePrepare: 'true', autoReleaseMerge: value })).toBe('prepare');
+    }
+    expect(logic.releaseMode({ autoReleaseMerge: 'true' })).toBe('full');
+    expect(logic.releaseMode({ autoReleasePrepare: 'false', autoReleaseMerge: 'true' })).toBe('full');
   });
 
   it('pauses on AUTO_RELEASE=false or the release:hold label', () => {
@@ -268,8 +321,13 @@ describe('planMilestone', () => {
     expect(plan({ milestone: milestone({ open_issues: 2 }), releasePr: botMerge })).toEqual({
       status: 'waiting',
       reason: '2 open item(s) left',
+      mode: 'safe',
       actions: [{ type: 'disable-auto-merge', pr: 10 }],
     });
+    const botReleaseAs = { number: 17, state: 'open', merged: false, autoMerge: { enabledBy: BOT } };
+    expect(plan({ milestone: milestone({ open_issues: 2 }), releaseAsPr: botReleaseAs }).actions).toEqual([
+      { type: 'disable-release-as-auto-merge', pr: 17 },
+    ]);
     const humanMerge = releasePr({ autoMerge: { enabledBy: 'arek-stk' } });
     expect(plan({ milestone: milestone({ open_issues: 1 }), releasePr: humanMerge }).actions).toEqual([]);
     expect(plan({ milestone: milestone({ closed_issues: 0 }) }).reason).toMatch(/no closed items/);
@@ -279,11 +337,26 @@ describe('planMilestone', () => {
     expect(plan({ currentVersion: '0.4.0' })).toMatchObject({ status: 'blocked', actions: [] });
   });
 
-  it('holds when paused, even in full mode', () => {
+  it('holds when paused, even in full mode, and only withdraws its own auto-merge', () => {
     expect(plan({ autoRelease: 'false' }).status).toBe('held');
     expect(plan({ autoRelease: 'false', autoReleaseMerge: 'true' })).toMatchObject({ status: 'held', actions: [] });
     const held = plan({ releasePr: releasePr({ labels: ['autorelease: pending', 'release:hold'], autoMerge: { enabledBy: BOT } }) });
     expect(held).toMatchObject({ status: 'held', actions: [{ type: 'disable-auto-merge', pr: 10 }] });
+    // A Release-As PR with bot auto-merge would otherwise still land on main while paused.
+    const other = releasePr({ title: 'chore(main): release 0.3.0', autoMerge: { enabledBy: BOT } });
+    const botReleaseAs = { number: 17, state: 'open', merged: false, autoMerge: { enabledBy: BOT } };
+    expect(plan({ autoRelease: 'false', autoReleaseMerge: 'true', releasePr: other, releaseAsPr: botReleaseAs })).toMatchObject({
+      status: 'held',
+      actions: [
+        { type: 'disable-auto-merge', pr: 10 },
+        { type: 'disable-release-as-auto-merge', pr: 17 },
+      ],
+    });
+    const humanReleaseAs = { ...botReleaseAs, autoMerge: { enabledBy: 'arek-stk' } };
+    expect(plan({ autoRelease: 'false', releasePr: releasePr(), releaseAsPr: humanReleaseAs }).actions).toEqual([]);
+    // The pause also stops finishing a published release.
+    const release = { id: 5, draft: false, body: '## 0.4.0', html_url: 'https://example.test/r' };
+    expect(plan({ autoRelease: 'false', release, releasePr: null })).toMatchObject({ status: 'held', actions: [] });
   });
 
   it('waits for release-please when there is no release PR', () => {
@@ -299,7 +372,13 @@ describe('planMilestone', () => {
     expect(plan({ ciSatisfied: true, releasePr: releasePr({ readyCommented: true }) })).toEqual({
       status: 'ready',
       reason: 'safe mode: release PR targets 0.4.0 and waits for a maintainer to merge it',
+      mode: 'safe',
       actions: [],
+    });
+    expect(plan({ autoReleasePrepare: 'true' })).toMatchObject({
+      status: 'awaiting-ci',
+      mode: 'prepare',
+      actions: [{ type: 'comment-release-ready', pr: 10 }],
     });
     // Leftover bot auto-merge from an earlier full-mode run is withdrawn; a human's auto-merge stays.
     expect(plan({ releasePr: releasePr({ readyCommented: true, autoMerge: { enabledBy: BOT } }) }).actions).toEqual([
@@ -318,10 +397,23 @@ describe('planMilestone', () => {
     );
   });
 
-  it('retargets a release PR with another version through a single Release-As PR', () => {
+  it('safe mode never opens a Release-As PR; it comments retarget instructions once', () => {
+    const other = releasePr({ title: 'chore(main): release 0.3.0' });
+    expect(plan({ releasePr: other })).toEqual({
+      status: 'needs-retarget',
+      reason: 'safe mode: release PR targets 0.3.0; a maintainer merges a Release-As 0.4.0 commit',
+      mode: 'safe',
+      actions: [{ type: 'comment-retarget-instructions', pr: 10 }],
+    });
+    expect(plan({ releasePr: releasePr({ title: 'chore(main): release 0.3.0', retargetCommented: true }) }).actions).toEqual([]);
+    const botMerge = releasePr({ title: 'chore(main): release 0.3.0', retargetCommented: true, autoMerge: { enabledBy: BOT } });
+    expect(plan({ releasePr: botMerge }).actions).toEqual([{ type: 'disable-auto-merge', pr: 10 }]);
+  });
+
+  it('retargets a release PR with another version through a single Release-As PR (prepare and full mode)', () => {
     const other = releasePr({ title: 'chore(main): release 0.3.0' });
     const openReleaseAs = { number: 17, state: 'open', merged: false, autoMerge: null };
-    expect(plan({ releasePr: other })).toMatchObject({
+    expect(plan({ releasePr: other, autoReleasePrepare: 'true' })).toMatchObject({
       status: 'retargeting',
       actions: [{ type: 'open-release-as-pr', autoMerge: false }],
     });
@@ -329,6 +421,10 @@ describe('planMilestone', () => {
       { type: 'open-release-as-pr', autoMerge: true },
     ]);
     expect(plan({ releasePr: other, releaseAsPr: openReleaseAs })).toMatchObject({ status: 'retargeting', actions: [] });
+    expect(plan({ releasePr: other, releaseAsPr: openReleaseAs, autoReleasePrepare: 'true' })).toMatchObject({
+      status: 'retargeting',
+      actions: [],
+    });
     expect(plan({ releasePr: other, releaseAsPr: openReleaseAs, autoReleaseMerge: 'true' })).toMatchObject({
       status: 'retargeting',
       actions: [{ type: 'enable-release-as-auto-merge', pr: 17 }],
@@ -338,6 +434,34 @@ describe('planMilestone', () => {
     expect(plan({ releasePr: other, releaseAsPr: botMerged }).actions).toEqual([
       { type: 'disable-release-as-auto-merge', pr: 17 },
     ]);
+    expect(plan({ releasePr: other, releaseAsPr: botMerged, autoReleasePrepare: 'true' }).actions).toEqual([
+      { type: 'disable-release-as-auto-merge', pr: 17 },
+    ]);
+  });
+
+  it('never enables auto-merge or opens pull requests unless the variables are exactly "true"', () => {
+    const botMerge = { enabledBy: BOT };
+    const scenarios: Record<string, unknown>[] = [
+      {},
+      { ciSatisfied: true },
+      { releasePr: releasePr({ title: 'chore(main): release 0.3.0' }) },
+      { releasePr: releasePr({ title: 'chore(main): release 0.3.0' }), releaseAsPr: { number: 17, state: 'open', merged: false, autoMerge: null } },
+      { releasePr: releasePr({ title: 'chore(main): release 0.3.0' }), releaseAsPr: { number: 17, state: 'open', merged: false, autoMerge: botMerge } },
+      { releasePr: releasePr({ autoMerge: botMerge }) },
+      { releasePr: null },
+    ];
+    const notTrue = [undefined, '', 'TRUE', 'True', ' true', 'true ', 'yes', '1', 'on', 'false'];
+    for (const scenario of scenarios) {
+      for (const value of notTrue) {
+        const types = (overrides: Record<string, unknown>) =>
+          plan({ ...scenario, ...overrides }).actions.map((a: { type: string; autoMerge?: boolean }) => a);
+        const safe = types({ autoReleasePrepare: value, autoReleaseMerge: value });
+        expect(safe.some((a: { type: string }) => a.type.startsWith('enable') || a.type === 'open-release-as-pr')).toBe(false);
+        const prepare = types({ autoReleasePrepare: 'true', autoReleaseMerge: value });
+        expect(prepare.some((a: { type: string }) => a.type.startsWith('enable'))).toBe(false);
+        expect(prepare.every((a: { autoMerge?: boolean }) => a.autoMerge !== true)).toBe(true);
+      }
+    }
   });
 
   it('stops instead of looping when a Release-As PR was merged or vetoed', () => {
@@ -379,6 +503,21 @@ describe('release notes and logging', () => {
     expect(logic.releaseNotesWithMilestone(once, parsed, 'https://github.com/o/r/milestone/2')).toBeNull();
     expect(logic.releaseAsCommitMessage(parsed)).toMatch(/\n\nRelease-As: 0\.5\.0\n$/);
     expect(logic.releaseAsBranch(parsed)).toBe('release-as/v0.5.0');
+  });
+
+  it('writes mode-specific ready and retarget comments with idempotency markers', () => {
+    const parsed = logic.parseMilestoneVersion('v0.4 — x');
+    const safe = logic.readyCommentBody(parsed, 'https://m', 'safe');
+    expect(safe.startsWith(logic.readyMarker(parsed))).toBe(true);
+    expect(safe).toMatch(/approve the pending workflow runs/);
+    expect(logic.readyCommentBody(parsed, 'https://m', 'prepare')).toMatch(/CI was requested/);
+    const retarget = logic.retargetCommentBody(parsed, 'https://m', '0.3.0');
+    expect(retarget.startsWith(logic.retargetMarker(parsed))).toBe(true);
+    expect(retarget).toContain('targets 0.3.0 instead of 0.4.0');
+    expect(retarget).toContain('-m "Release-As: 0.4.0"');
+    // The suggested branch is not a release-as/ automation branch, so a later prepare-mode run never collides with it.
+    expect(retarget).toContain('git switch -c chore/release-as-0.4.0 origin/main');
+    expect(logic.isAutomationBranch('chore/release-as-0.4.0')).toBe(false);
   });
 
   it('neutralises workflow commands in untrusted text', () => {
