@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/arek-stk/ai-orchestrator/compare/v0.3.0...v0.4.0) (2026-09-15)
+
+
+### Features
+
+* autopilot sessions stage 1 (away mode) ([#27](https://github.com/arek-stk/ai-orchestrator/issues/27)) ([06bacd9](https://github.com/arek-stk/ai-orchestrator/commit/06bacd9f04a0fa22183bedbfbd2a63e233e4965c))
+* **room:** Project Room stage 1 with unified conversation model ([#22](https://github.com/arek-stk/ai-orchestrator/issues/22)) ([95c07b5](https://github.com/arek-stk/ai-orchestrator/commit/95c07b534f648cc05795849bc9660e1f63af8e8b))
+* **security:** dependency_addition approval gate for every new dependency ([#20](https://github.com/arek-stk/ai-orchestrator/issues/20)) ([7fb81d5](https://github.com/arek-stk/ai-orchestrator/commit/7fb81d59cac41cc2d6e706dede533b4dbc7cd15f))
+* **web:** AI Hub with catalog, connections and detail panel ([#28](https://github.com/arek-stk/ai-orchestrator/issues/28)) ([9224d0d](https://github.com/arek-stk/ai-orchestrator/commit/9224d0dbb0a2c5341bf39f473170a05c0e3a1e74))
+
+
+### Bug Fixes
+
+* **security:** resolve CodeQL ReDoS and password-hash alerts ([#24](https://github.com/arek-stk/ai-orchestrator/issues/24)) ([6e54211](https://github.com/arek-stk/ai-orchestrator/commit/6e54211dab297e3ca434ae83e35ce3995c582e6d))
+
 ## [0.3.0](https://github.com/arek-stk/ai-orchestrator/compare/v0.2.0...v0.3.0) (2026-09-15)
 
 
