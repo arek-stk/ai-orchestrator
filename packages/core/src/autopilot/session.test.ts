@@ -31,6 +31,7 @@ function session(overrides: Partial<AutopilotSession> = {}): AutopilotSession {
     autonomyCeiling: 3,
     maxTaskRisk: 'medium',
     maxConcurrentRuns: null,
+    maxParkedRuns: 3,
     quietHours: null,
     stopPolicy: defaultStopPolicy(),
     demo: false,
@@ -173,6 +174,8 @@ describe('quiet hours and eligibility', () => {
     expect(sessionTaskEligibility({ ...input, session: session({ quietHours: { timeZone: 'UTC', windows: [{ from: '09:00', to: '11:00' }] } }) })).toBe('autopilot_quiet_hours');
     expect(sessionTaskEligibility({ ...input, spentUsd: 4.5 })).toBe('autopilot_budget_reserve');
     expect(sessionTaskEligibility({ ...input, spentUsd: 4.49 })).toBeNull();
+    expect(sessionTaskEligibility({ ...input, parkedRuns: 2 })).toBeNull();
+    expect(sessionTaskEligibility({ ...input, parkedRuns: 3 })).toBe('autopilot_parked_full');
     expect(sessionTaskEligibility({ ...input, task: { ...task, risk: 'high' } })).toBe('autopilot_risk_class');
     expect(sessionTaskEligibility({ ...input, session: session({ maxTaskRisk: 'low' }) })).toBe('autopilot_risk_class');
     expect(sessionTaskEligibility({ ...input, task: { ...task, kind: 'security' } })).toBe('autopilot_security_relevant');

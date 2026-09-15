@@ -139,6 +139,7 @@ export class AutopilotService {
       autonomyCeiling: input.autonomyCeiling,
       maxTaskRisk: input.maxTaskRisk,
       maxConcurrentRuns: input.maxConcurrentRuns,
+      maxParkedRuns: input.maxParkedRuns,
       quietHours: input.quietHours,
       stopPolicy: { ...defaultStopPolicy(limits), ...input.stopPolicy },
       demo: this.deps.demoMode?.() ?? false,

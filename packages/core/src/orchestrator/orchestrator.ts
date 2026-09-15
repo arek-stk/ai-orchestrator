@@ -180,6 +180,7 @@ export class Orchestrator {
     // Projects in an active session only get tasks the autopilot may pick up.
     const sessionByProject = new Map<string, AutopilotSession>();
     for (const session of sessions) for (const projectId of session.projectIds) sessionByProject.set(projectId, session);
+    const parked = sessions.length > 0 ? await this.deps.runs.countByProject(['PARKED']) : new Map<string, number>();
     const spent = new Map<string, number>();
     const sessionSkips: SkippedTask[] = [];
     const eligible: Task[] = [];
@@ -190,7 +191,7 @@ export class Orchestrator {
         continue;
       }
       if (!spent.has(session.id)) spent.set(session.id, await this.deps.autopilotSessions!.spentUsd(session, now));
-      const reason = sessionTaskEligibility({ task, session, now, spentUsd: spent.get(session.id)! });
+      const reason = sessionTaskEligibility({ task, session, now, spentUsd: spent.get(session.id)!, parkedRuns: parked.get(task.projectId) ?? 0 });
       if (reason) sessionSkips.push({ taskId: task.id, projectId: task.projectId, reason });
       else eligible.push(task);
     }
@@ -352,8 +353,11 @@ export class Orchestrator {
       await this.deps.tasks.update(task.id, { status: 'PAUSED', blockedReason: reason });
       return this.persist(run, { next: 'wait', resumeAt: null });
     }
+    // A run started in a session keeps the capped autonomy and hard gates until it finishes, also after a graceful
+    // stop: ending a session only ever removes autonomy. Approvals are deferred (parked) only while it is active.
+    // A human resume detaches the run from an ended session (see `resume`).
     const activeSession = session?.status === 'active' ? session : null;
-    const project = activeSession ? applyAutopilotSession(baseProject, activeSession, this.options.autopilot) : baseProject;
+    const project = session ? applyAutopilotSession(baseProject, session, this.options.autopilot) : baseProject;
 
     const stop = checkStopConditions(run, run.limits, now);
     if (stop.stop) {

@@ -63,6 +63,8 @@ export interface AutopilotSession {
   maxTaskRisk: Extract<Risk, 'low' | 'medium'>;
   /** Slot-holding session runs at once (null: only the projects' own limits apply). */
   maxConcurrentRuns: number | null;
+  /** Parked runs per project from which no new run starts there (a pile of unreviewed branches helps nobody). */
+  maxParkedRuns: number;
   quietHours: QuietHours | null;
   stopPolicy: AutopilotStopPolicy;
   /** Started while the instance ran with mock models (demo mode). */
@@ -159,6 +161,7 @@ export function autopilotStartSchema(limits: AutopilotLimits) {
       .transform((v) => v as AutonomyLevel),
     maxTaskRisk: z.enum(['low', 'medium']).default('medium'),
     maxConcurrentRuns: z.number().int().min(1).max(20).nullable().default(null),
+    maxParkedRuns: z.number().int().min(1).max(10).default(3),
     quietHours: QuietHoursSchema.nullable().default(null),
     stopPolicy: z
       .object({
@@ -261,13 +264,21 @@ export function isQuietHour(now: Date, quietHours: QuietHours | null): boolean {
   });
 }
 
-export type AutopilotSkipReason = 'scheduling_hold' | 'autopilot_quiet_hours' | 'autopilot_budget_reserve' | 'autopilot_risk_class' | 'autopilot_security_relevant';
+export type AutopilotSkipReason =
+  | 'scheduling_hold'
+  | 'autopilot_quiet_hours'
+  | 'autopilot_budget_reserve'
+  | 'autopilot_parked_full'
+  | 'autopilot_risk_class'
+  | 'autopilot_security_relevant';
 
 export interface EligibilityInput {
   task: StagePlanTask & { schedulingHold?: boolean };
-  session: Pick<AutopilotSession, 'budgetUsd' | 'maxTaskRisk' | 'quietHours' | 'stopPolicy'>;
+  session: Pick<AutopilotSession, 'budgetUsd' | 'maxTaskRisk' | 'maxParkedRuns' | 'quietHours' | 'stopPolicy'>;
   now: Date;
   spentUsd: number;
+  /** PARKED runs in the task's project. */
+  parkedRuns?: number;
 }
 
 /** Why the autopilot must not start this task (null: eligible). Only existing READY/BACKLOG tasks reach this. */
@@ -278,6 +289,7 @@ export function sessionTaskEligibility(input: EligibilityInput): AutopilotSkipRe
   if (task.schedulingHold === true) return 'scheduling_hold';
   if (isQuietHour(input.now, session.quietHours)) return 'autopilot_quiet_hours';
   if (input.spentUsd >= session.budgetUsd * session.stopPolicy.noNewRunsAtBudgetShare) return 'autopilot_budget_reserve';
+  if ((input.parkedRuns ?? 0) >= session.maxParkedRuns) return 'autopilot_parked_full';
   if (task.risk === 'high' || (session.maxTaskRisk === 'low' && task.risk !== 'low')) return 'autopilot_risk_class';
   if (isSecurityRelevant(task)) return 'autopilot_security_relevant';
   return null;
