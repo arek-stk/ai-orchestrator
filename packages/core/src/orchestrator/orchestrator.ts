@@ -1,5 +1,6 @@
 import { AGENT_DEFINITIONS } from '../agents/definitions';
 import type { AgentRuntime } from '../agents/runtime';
+import { approvalGrant } from '../approval/dependencies';
 import type { FileSummaryStore } from '../context/file-summarizer';
 import { TERMINAL_RUN_STATUSES, type RunStage, type RunStatus, type StageStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
@@ -353,7 +354,9 @@ export class Orchestrator {
       return this.persist(run, { next: 'done', status: run.status });
     }
 
-    if (!run.checkpoint.approvedActions.includes(approval.action)) run.checkpoint.approvedActions.push(approval.action);
+    // Dependency approvals grant exactly the approved set of additions (ADR-031), not the action as a whole.
+    const grant = approvalGrant(approval);
+    if (grant && !run.checkpoint.approvedActions.includes(grant)) run.checkpoint.approvedActions.push(grant);
     run.status = 'RUNNING';
     run.resumeAt = null;
     await this.deps.tasks.update(task.id, { status: 'RUNNING' });

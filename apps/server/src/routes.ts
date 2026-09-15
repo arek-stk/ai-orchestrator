@@ -14,6 +14,7 @@ import {
   ProjectInputSchema,
   ProjectProfileSchema,
   ProjectSettingsSchema,
+  readDependencyApprovalDetails,
   RepoRefSchema,
   RISKS,
   RUN_STATUSES,
@@ -24,6 +25,8 @@ import {
   TaskInputSchema,
   AGENT_ROLES,
   type AnyDomainEvent,
+  type Approval,
+  type DependencyApprovalDetails,
   type Project,
   type RunStatus,
 } from '@orch/core';
@@ -96,6 +99,14 @@ function mergeSettings(project: Project, patch: z.infer<typeof ProjectPatchSchem
     approvalGates: { ...project.settings.approvalGates, ...patch.approvalGates },
     modelOverrides: patch.modelOverrides ?? project.settings.modelOverrides,
   });
+}
+
+/**
+ * Adds the typed `dependencies` field to dependency approvals (ADR-031). `details` stays untouched for existing
+ * clients; the typed field is validated and its registry links are rebuilt from fixed templates.
+ */
+function withDependencies<T extends Approval>(approval: T): T & { dependencies: DependencyApprovalDetails | null } {
+  return { ...approval, dependencies: readDependencyApprovalDetails(approval) };
 }
 
 export async function registerRoutes(app: FastifyInstance, container: Container): Promise<void> {
@@ -236,7 +247,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
       repos.approvals.list({ projectId: id, limit: 50 }),
       admin.stats.summary(since, id),
     ]);
-    return { project: { ...project, autonomyLabel: AUTONOMY_LABELS[project.autonomyLevel] }, tasks, runs, decisions, approvals, costs30d: costs };
+    return { project: { ...project, autonomyLabel: AUTONOMY_LABELS[project.autonomyLevel] }, tasks, runs, decisions, approvals: approvals.map(withDependencies), costs30d: costs };
   });
 
   app.patch('/api/projects/:id', operator, async (request, reply) => {
@@ -402,7 +413,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
       repos.approvals.list({ projectId: run.projectId, limit: 100 }),
       repos.decisions.list({ taskId: run.taskId, limit: 20 }),
     ]);
-    return { run, task, agentRuns, events, approvals: approvals.filter((a) => a.runId === id), decisions };
+    return { run, task, agentRuns, events, approvals: approvals.filter((a) => a.runId === id).map(withDependencies), decisions };
   });
 
   app.post('/api/runs/:id/resume', operator, async (request, reply) => {
@@ -481,12 +492,14 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
   app.get('/api/approvals', viewer, async (request) => {
     const query = z.object({ status: z.enum(['pending', 'approved', 'rejected', 'expired']).optional(), projectId: z.string().optional() }).parse(request.query);
     return {
-      approvals: await acl.scopedList(
-        request,
-        query.projectId,
-        (projectId) => repos.approvals.list({ ...(projectId ? { projectId } : {}), ...(query.status ? { status: query.status } : {}), limit: 200 }),
-        { limit: 200, sortKey: (a) => a.requestedAt.getTime() },
-      ),
+      approvals: (
+        await acl.scopedList(
+          request,
+          query.projectId,
+          (projectId) => repos.approvals.list({ ...(projectId ? { projectId } : {}), ...(query.status ? { status: query.status } : {}), limit: 200 }),
+          { limit: 200, sortKey: (a) => a.requestedAt.getTime() },
+        )
+      ).map(withDependencies),
     };
   });
 
@@ -503,7 +516,7 @@ export async function registerRoutes(app: FastifyInstance, container: Container)
     if (!decided) return reply.code(409).send({ error: 'approval was already decided' });
     const result = await orchestrator.onApprovalDecided(id);
     await audit(request, `approval.${status}`, id, { action: approval.action, runId: approval.runId });
-    return { approval: decided, result };
+    return { approval: withDependencies(decided), result };
   });
 
   // ---------------------------------------------------------------------------
