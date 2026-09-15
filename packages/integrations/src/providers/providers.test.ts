@@ -3,10 +3,10 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { AGENT_DEFINITIONS, DEFAULT_MODEL_CONFIGS, ProviderError, type ModelConfig, type StructuredRequest } from '@orch/core';
-import { createDemoResponders } from '../demo/responders';
+import { createDemoResponders, slugOf } from '../demo/responders';
 import { AnthropicProvider } from './anthropic';
 import { GoogleProvider } from './google';
-import { parseStructuredText } from './json-schema';
+import { parseStructuredText, unwrapJsonFence } from './json-schema';
 import { MockProvider } from './mock';
 import { OpenAIProvider } from './openai';
 import { DefaultProviderResolver, type ProviderCredential } from './resolver';
@@ -232,6 +232,35 @@ describe('provider resolver', () => {
     expect(resolver.get({ ...model('openai-compatible', 'x'), providerConfigId: 'prv_compat_broken' })).toBeNull();
     expect(resolver.get(DEFAULT_MODEL_CONFIGS.find((m) => m.provider === 'mock')!)?.kind).toBe('mock');
   });
+
+  it('rebuilds an adapter when its credential changes and keeps accounts with the same key apart', () => {
+    let accounts: ProviderCredential[] = [
+      { id: 'prv_a', kind: 'anthropic', apiKey: 'sk-ant-one', baseUrl: null, enabled: true },
+      { id: 'prv_b', kind: 'anthropic', apiKey: 'sk-ant-one', baseUrl: null, enabled: true },
+    ];
+    const rotating = new DefaultProviderResolver(() => accounts);
+    const pinned = (id: string) => ({ ...model('anthropic', 'claude'), providerConfigId: id });
+
+    const first = rotating.get(pinned('prv_a'));
+    expect(first?.kind).toBe('anthropic');
+    expect(rotating.get(pinned('prv_a'))).toBe(first);
+    const other = rotating.get(pinned('prv_b'));
+    expect(other).not.toBe(first);
+
+    accounts = [{ ...accounts[0]!, apiKey: 'sk-ant-two' }, accounts[1]!];
+    const rotated = rotating.get(pinned('prv_a'));
+    expect(rotated).not.toBe(first);
+    expect(rotating.get(pinned('prv_a'))).toBe(rotated);
+    expect(rotating.get(pinned('prv_b'))).toBe(other);
+
+    accounts = [{ ...accounts[0]!, baseUrl: 'http://127.0.0.1:1' }, accounts[1]!];
+    const moved = rotating.get(pinned('prv_a'));
+    expect(moved).not.toBe(rotated);
+    expect(rotating.get(pinned('prv_a'))).toBe(moved);
+
+    rotating.clear();
+    expect(rotating.get(pinned('prv_a'))).not.toBe(moved);
+  });
 });
 
 describe('demo responders', () => {
@@ -270,10 +299,78 @@ describe('demo responders', () => {
   });
 });
 
+describe('demo slugs', () => {
+  // The regex chain slugOf used before it became linear; kept as the behavioural reference on normal input.
+  const legacySlugOf = (title: string) =>
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'change';
+
+  it('matches the previous slugs on normal titles', () => {
+    const titles = ['Add CSV export for orders', '  --Fix: login (SSO)!--  ', '!!!', '', 'Crème brûlée 🚀', `${'x'.repeat(39)} tail`, 'a_b-c.d 123'];
+    for (const title of titles) expect(slugOf(title)).toBe(legacySlugOf(title));
+    expect(slugOf('Add CSV export for orders')).toBe('add-csv-export-for-orders');
+    expect(slugOf(`${'x'.repeat(39)} tail`)).toBe(`${'x'.repeat(39)}-`);
+    expect(slugOf('!!!')).toBe('change');
+  });
+
+  it('builds demo file paths from hostile titles in linear time', () => {
+    const responders = createDemoResponders();
+    const started = Date.now();
+    for (const title of [`${'-'.repeat(50_000)}x`, `${'a-'.repeat(25_000)}!`, `${' -'.repeat(25_000)}`]) {
+      const request = { messages: [{ role: 'user', content: `Title: ${title}` }] } as StructuredRequest<unknown>;
+      const output = responders.build_output!(request) as { changes: Array<{ path: string }> };
+      expect(output.changes[0]!.path).toBe(`src/features/${slugOf(title)}.ts`);
+    }
+    expect(slugOf(`${'-'.repeat(50_000)}x`)).toBe('x');
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
 describe('parseStructuredText', () => {
   it('accepts fenced JSON and rejects invalid output', () => {
     expect(parseStructuredText('```json\n' + JSON.stringify(answer) + '\n```', AnswerSchema, 'openai-compatible', 'a')).toEqual(answer);
     expect(() => parseStructuredText('not json', AnswerSchema, 'openai', 'a')).toThrow(ProviderError);
     expect(() => parseStructuredText('{"answer":"x"}', AnswerSchema, 'openai', 'a')).toThrow(/confidence/);
+  });
+
+  it('unwraps fences exactly like the previous regex', () => {
+    // The fence regex used before unwrapJsonFence; kept as the behavioural reference on normal input.
+    const legacy = (text: string) => {
+      const trimmed = text.trim();
+      return /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed)?.[1] ?? trimmed;
+    };
+    const samples = [
+      '{"a":1}',
+      '```json\n{"a":1}\n```',
+      '```JSON {"a":1}```',
+      '  ```Json\t[1, 2]\t```  ',
+      '```\n{}\n```',
+      '```js\n{}\n```',
+      '```jsonx\n{}\n```',
+      '````\n{}\n````',
+      '```json\n\n  {"a": "```"}  \n\n```',
+      '``` {} ```',
+      '``````',
+      '```json```',
+      '`````',
+      '```json``',
+      '```{"a":1}',
+      '{"a":1}```',
+      '```   ```',
+    ];
+    for (const sample of samples) expect(unwrapJsonFence(sample)).toBe(legacy(sample));
+    expect(unwrapJsonFence('```json\n{"a":1}\n```')).toBe('{"a":1}');
+  });
+
+  it('rejects hostile fenced output in linear time', () => {
+    const started = Date.now();
+    for (const text of [`\`\`\`${' '.repeat(50_000)}`, `\`\`\`json${'\n'.repeat(50_000)}x`, `\`\`\`${' '.repeat(50_000)}\`\`\``, '```'.repeat(20_000)]) {
+      expect(() => parseStructuredText(text, AnswerSchema, 'openai-compatible', 'a')).toThrow(ProviderError);
+    }
+    expect(unwrapJsonFence(`\`\`\`${' '.repeat(50_000)}\`\`\``)).toBe('');
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
