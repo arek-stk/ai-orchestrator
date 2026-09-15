@@ -1,0 +1,65 @@
+name: Repo Guardian
+
+# Continuously checks repository health (CI on main, security alerts, pull requests, branch protection, docs
+# consistency, stale branches, Dependabot PRs) and keeps a single "Repo Guardian report" issue up to date.
+# Script: .github/scripts/repo-guardian/. Decision: ADR-012 (Repo Guardian addendum).
+#
+# Optional secret REPO_GUARDIAN_TOKEN: fine-grained personal access token restricted to this repository with
+# read-only "Secret scanning alerts" and "Administration" permissions (add "Dependabot alerts: read" only if the
+# GITHUB_TOKEN cannot read them). Without it, secret scanning is reported as "not checked" and branch protection
+# is read from the public protection summary. The token is used for reads only and never printed.
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - ".github/scripts/repo-guardian/**"
+      - ".github/workflows/repo-guardian.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-guardian
+  cancel-in-progress: false
+
+jobs:
+  guardian:
+    name: Check repository health
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A workflow_run from a fork PR whose branch happens to be called "main" must not trigger a report.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: write
+      pull-requests: read
+      security-events: read
+      statuses: read
+      vulnerability-alerts: read
+    steps:
+      # Checks out the default branch (or the dispatched ref); no pull request code is ever checked out.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Repo Guardian
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REPO_GUARDIAN_TOKEN: ${{ secrets.REPO_GUARDIAN_TOKEN }}
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const entry = pathToFileURL(`${process.env.GITHUB_WORKSPACE}/.github/scripts/repo-guardian/repo-guardian.mjs`);
+            const { default: guardian } = await import(entry.href);
+            await guardian({ github, context, core, getOctokit, root: process.env.GITHUB_WORKSPACE });

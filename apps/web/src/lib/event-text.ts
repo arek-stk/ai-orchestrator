@@ -67,6 +67,8 @@ export function describeEvent(event: DomainEvent): string {
       return `Approval ${str(p.status)} by ${str(p.by)}`;
     case 'budget.exhausted':
       return `Budget exhausted (${str(p.scope)}): ${str(p.reason)}`;
+    case 'room.message':
+      return `Room: ${str(p.authorName)} posted ${p.threadId ? 'a reply' : `a ${humanize(str(p.intent)).toLowerCase()}`}`;
     case 'scheduler.tick':
       return `Scheduler selected ${num(p.selected)} task(s), skipped ${num(p.skipped)}`;
     default:
@@ -101,6 +103,7 @@ export function eventTone(event: DomainEvent): Tone {
 }
 
 export function eventHref(event: DomainEvent): string | null {
+  if (event.type === 'room.message' && event.projectId) return `/projects/${event.projectId}?tab=room`;
   if (event.runId) return `/runs/${event.runId}`;
   if (event.projectId) return `/projects/${event.projectId}`;
   return null;
