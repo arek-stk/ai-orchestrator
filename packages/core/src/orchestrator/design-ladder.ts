@@ -41,7 +41,10 @@ const ORIGIN_BY_RUNG: Record<Exclude<LadderRung, 'human'>, DecisionOrigin> = {
 const CHECKS = new Set(['test', 'lint', 'typecheck', 'build']);
 const RESEARCH_TOKEN_BUDGET = 12_000;
 
-export async function designInSession(ctx: StageContext, input: { question: string; approach: string; plan: PlanOutput | null; sections: AgentInput['sections'] }): Promise<StageOutcome> {
+export async function designInSession(
+  ctx: StageContext,
+  input: { question: string; questionKey: string; approach: string; plan: PlanOutput | null; sections: AgentInput['sections'] },
+): Promise<StageOutcome> {
   const { deps, project, run, task } = ctx;
   const wiring = deps.decisionLadder!;
   const session = ctx.session!;
@@ -53,7 +56,7 @@ export async function designInSession(ctx: StageContext, input: { question: stri
       run.checkpoint.designDecisionId = existing.decisionId;
       return { kind: 'passed', summary: `Decision ${existing.decisionId} already recorded for this question.` };
     }
-    if (existing?.status === 'parked' && run.checkpoint.approvedActions.includes('architecture_change')) return humanAnswered(ctx, wiring, existing, input.approach);
+    if (existing?.status === 'parked' && run.checkpoint.approvedActions.includes('architecture_change')) return humanAnswered(ctx, wiring, existing, input.approach, input.questionKey);
   }
 
   const seed: CouncilOption = { id: 'proposed', summary: truncate(input.approach, 900), reversibility: 'moderate', blastRadius: 'medium', estimatedCost: 'medium' };
@@ -72,12 +75,6 @@ export async function designInSession(ctx: StageContext, input: { question: stri
   if (created) {
     await deps.events.emit({ type: 'decision_request.created', projectId: project.id, taskId: task.id, runId: run.id, payload: { requestId: request.id, sessionId: session.id, kind: request.kind, question: truncate(request.question, 300) } });
   }
-  if (request.status === 'answered' && request.decisionId) {
-    // Another run asked the same question and it was already settled.
-    run.checkpoint.designDecisionId = request.decisionId;
-    return { kind: 'passed', summary: `Reused the answer of decision request ${request.id}.` };
-  }
-
   const repo = project.repo;
   const ref = run.checkpoint.baseSha ?? repo?.defaultBranch ?? null;
   const readFile = async (path: string) => (repo && ref ? deps.github.getFileContent(repo, path, ref) : null);
@@ -147,7 +144,7 @@ export async function designInSession(ctx: StageContext, input: { question: stri
       taskId: task.id,
       runId: run.id,
       question: input.question,
-      questionKey: request.fingerprint,
+      questionKey: input.questionKey,
       options: request.options.map((o) => ({ id: o.id, summary: o.summary, pros: [], cons: [] })),
       consulted: [],
       evidence: [...answer.evidence, ...answer.dissent.map((d) => `Dissent: ${d}`)].slice(0, 30),
@@ -186,7 +183,7 @@ export async function designInSession(ctx: StageContext, input: { question: stri
 }
 
 /** A human approved the parked design question: the run continues with the advisory option and the answer is recorded. */
-async function humanAnswered(ctx: StageContext, wiring: DecisionLadderWiring, request: DecisionRequest, approach: string): Promise<StageOutcome> {
+async function humanAnswered(ctx: StageContext, wiring: DecisionLadderWiring, request: DecisionRequest, approach: string, questionKey: string): Promise<StageOutcome> {
   const { deps, project, run, task } = ctx;
   const approval = request.approvalId ? await deps.approvals.get(request.approvalId) : null;
   const by = approval?.decidedBy ?? 'a human';
@@ -196,7 +193,7 @@ async function humanAnswered(ctx: StageContext, wiring: DecisionLadderWiring, re
     taskId: task.id,
     runId: run.id,
     question: request.question,
-    questionKey: request.fingerprint,
+    questionKey,
     options: request.options.map((o) => ({ id: o.id, summary: o.summary, pros: [], cons: [] })),
     consulted: [],
     evidence: [`Parked (${request.parkReason ?? 'unresolved'}) and approved by ${by}`],

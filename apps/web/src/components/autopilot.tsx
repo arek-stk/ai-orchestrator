@@ -14,7 +14,13 @@ import { Button, cx, Field, IconButton, inputClass, ToneIcon, useNow } from './u
 // Autopilot / away mode (ADR-034): start dialog, active-session banner, stop and kill switch.
 
 export const autopilotEvent = (event: DomainEvent) =>
-  event.type.startsWith('autopilot.') || event.type.startsWith('approval.') || event.type === 'agent.completed' || event.type === 'budget.exhausted';
+  event.type.startsWith('autopilot.') ||
+  event.type.startsWith('approval.') ||
+  event.type.startsWith('decision_request.') ||
+  event.type === 'council.finished' ||
+  event.type === 'decision.reviewed' ||
+  event.type === 'agent.completed' ||
+  event.type === 'budget.exhausted';
 
 const DURATION_PRESETS = [4, 10, 48];
 

@@ -5,8 +5,9 @@ without user input. Questions and decisions go to the app first (decision memory
 research), then work continues. The AIs come up with ideas for what to build next, but discuss them with the other
 agents before acting.
 
-Status: **stage 1 implemented** (away mode MVP, §9.6), decided in **ADR-034** in `docs/DECISIONS.md`. Stages 2–5
-(decision ladder, council v2, ideas, hardening) remain proposals. Roadmap position 3 in `docs/STATE.md`.
+Status: **stage 1 implemented** (away mode MVP, §9.6), decided in **ADR-034** in `docs/DECISIONS.md`. **Stages 2+3
+implemented together** for DESIGN questions of session runs (decision ladder and council protocol v2, ADR-034
+addendum). Stages 4–5 (ideas, hardening) remain proposals. Roadmap position 3 in `docs/STATE.md`.
 Proposed decision for the later stages: draft in §13 (the stage 1 parts are superseded by ADR-034).
 
 ### Stage 1 progress (2026-09-15)
@@ -25,6 +26,33 @@ Proposed decision for the later stages: draft in §13 (the stage 1 parts are sup
 | (j) quiet hours across a DST change | ✅ |
 | (k) a disabled gate still parks in a session | ✅ (all gated actions are hard in a session) |
 | Not in stage 1 as built | `stopping` state, PATCH extend, class A/B risk classifier, spend-rate baseline, `scheduling_hold` (named TODO until the planning assistant adds it), metrics |
+
+### Stages 2+3 progress (2026-09-16)
+
+Built as one slice because the ladder has no judgment rung without council v2. The entry point is DESIGN in an active
+session. Other question sources (`openQuestions`, blockers, INTAKE) follow.
+
+| Acceptance criterion (§9.6) | State |
+|---|---|
+| 2(a) a rephrased question matching an accepted ADR by quote resolves at rung (a) without council cost | ✅ ladder test |
+| 2(b) an answer conflicting with an accepted ADR parks and cites the ADR | ✅ at rung (a) and as a consistency check after council/research; proposals to change an ADR park deterministically |
+| 2(c) research evidence with a non-existent path or absent quote is rejected and escalates | ✅ |
+| 2(d) duplicate questions create one request | ✅ partial unique index (PGlite) and memory store |
+| 2(e) non-blocking question → assumption as provisional decision | ⏳ deferred: no `openQuestions` in agent outputs yet |
+| 2(f) ≤ 3 questions per run | ⏳ deferred (one DESIGN question per run today) |
+| 2(g) human answer resumes the parked run | ✅ through the deferred `architecture_change` approval (no separate answer route yet) |
+| 3(a) unanimous + no blocking objection → decided | ✅ |
+| 3(b) verified, unrebutted blocking objection → parked | ✅ pure rule and pipeline scenario |
+| 3(c) the same objection with unverified evidence → ignored | ✅ (also refuted/fabricated quotes) |
+| 3(d) a round-2 flip without new evidence is ignored | ✅ (self-cited evidence does not count as new) |
+| 3(e) an executed check falsifies the majority option | ✅ via the `ExperimentRunner` port; no sandbox runner is wired on the server yet (recorded as skipped) |
+| 3(f) tie → more reversible; equal → parked | ✅ |
+| 3(g) diversity `none` parks; critic routed to another provider (router test) | ✅ plus `cross_model` = single provider with a +0.10 threshold |
+| 3(h) injection inside quoted repository text changes nothing and stays inside delimiters | ✅ prompt check |
+| 3(i) replay of `decideCouncil` over stored turns | ✅ |
+| 3(j) rounds, token cap, timeout and council caps end parked with a reason | ✅ cost cap, token limit, timeout, per-session council count and budget share, per-decision cost cap |
+| 3(k) overturn blocks dependent tasks and lowers calibration | ⏳ deferred: rejection only removes the decision from reuse |
+| Room projection | ✅ one thread per council, deduplicated, at most 14 messages |
 Other in-flight drafts already claim ADR-031 (Plugin Scout), ADR-032 (reserved for provider accounts) and ADR-033
 (planning assistant, `docs/plans/planning-assistant.md`).
 

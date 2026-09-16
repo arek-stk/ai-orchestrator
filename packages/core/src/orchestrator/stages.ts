@@ -432,7 +432,9 @@ export const designStage: StageHandler = async (ctx) => {
   const key = questionKey(['design', task.title, approach]);
   const { council } = project.settings;
 
-  const reusable = await deps.decisions.findByQuestionKey(project.id, key);
+  const found = await deps.decisions.findByQuestionKey(project.id, key);
+  // Rejected decisions are never returned; a provisional one (not yet reviewed) is only reused inside its own session.
+  const reusable = found && (found.status !== 'provisional' || (ctx.session !== null && found.sessionId === ctx.session.id)) ? found : null;
   if (reusable && reusable.confidence >= council.confidenceThreshold) {
     run.checkpoint.designDecisionId = reusable.id;
     return passed(`Reused earlier decision ${reusable.id} (${Math.round(reusable.confidence * 100)}% confidence, no model call).`);
@@ -443,7 +445,7 @@ export const designStage: StageHandler = async (ctx) => {
     : [];
   // Autopilot stage 2+3: in an active session the question climbs the decision ladder (precedent → research → council
   // protocol v2 → park) and settles only provisional decisions.
-  if (ctx.session && deps.decisionLadder) return designInSession(ctx, { question, approach, plan, sections });
+  if (ctx.session && deps.decisionLadder) return designInSession(ctx, { question, questionKey: key, approach, plan, sections });
 
   const members = councilMembers(task, plan);
 
