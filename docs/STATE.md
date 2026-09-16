@@ -58,5 +58,6 @@ workflow `uses:`, MCP/Claude/editor configs. It will be the `dependency_addition
 Proposed, not yet scheduled:
 * **In-app planning assistant** (idea → precise brief → project/milestones/tasks after confirmation): `docs/plans/planning-assistant.md`.
 * **Plugin Scout** (per-project plugin recommendations with trust scoring, never auto-install): `docs/plans/plugin-scout.md`.
+* **Notifications and approvals from the phone** (feature 1 of the approved backlog; in-app centre, Telegram, Web Push, e-mail, Discord; remote approval tiers; ADR-038 draft): `docs/plans/notifications.md`.
 * **Provider accounts per owner** (several Claude/OpenAI accounts, per-account budgets, BYO-AI via MCP): `docs/research/multi-account-ai.md`.
 * Known gaps: web UI tests, project profile editing, model create/delete, audit log page, memberships UI.
