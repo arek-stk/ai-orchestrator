@@ -33,6 +33,8 @@ export interface EventPayloads {
   'approval.required': { approvalId: string; action: GatedAction | 'publish_changes'; risk: string; reason: string; mode?: 'blocking' | 'deferred' };
   'approval.decided': { approvalId: string; status: 'approved' | 'rejected' | 'expired'; by: string };
   'budget.exhausted': { scope: string; reason: string };
+  /** A budget scope crossed 80 % or 90 % with the last model call (ADR-038). */
+  'budget.threshold_reached': { scope: string; percent: 80 | 90; usedUsd: number; limitUsd: number };
   'scheduler.tick': { selected: number; skipped: number };
   'project.health_scan.requested': { scanId: string; trigger: 'manual' | 'scheduled' };
   'project.health_scanned': { scanId: string; healthScore: number; previousScore: number | null; proposalsCreated: number; autoAccepted: number; costUsd: number };
@@ -43,7 +45,12 @@ export interface EventPayloads {
   'release.readiness': { verdict: 'ready' | 'not_ready'; blockers: string[] };
   'research.completed': { memoryKey: string; question: string; confidence: number };
   /** Content-free: clients load the message through the room API (ADR-030). */
+  /** Content-free: one event per mentioned user; only that user receives it (audience filter, ADR-038). */
+  'room.mention': { conversationId: string; messageId: string; recipientUserId: string };
   'room.message': { conversationId: string; messageId: string; seq: number; threadId: string | null; authorType: MessageAuthorType; authorName: string; intent: MessageIntent };
+  // Notification centre (ADR-038): content-free, delivered on SSE and the event API only to the recipient.
+  'notification.created': { recipientUserId: string; unread: number };
+  'notification.read': { recipientUserId: string; unread: number };
   // Autopilot (away mode). Session events are emitted once per project in scope so per-project ACLs apply.
   'autopilot.session.started': { sessionId: string; endsAt: string; budgetUsd: number; effectiveAutonomy: number; demo: boolean };
   'autopilot.session.resumed': { sessionId: string; reason: string };
