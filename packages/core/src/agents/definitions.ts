@@ -57,7 +57,8 @@ export type AgentKey =
   | 'file_summary'
   | 'research'
   | 'documentation'
-  | 'release_readiness';
+  | 'release_readiness'
+  | 'workflow_agent';
 
 export interface AgentDefinition<S extends z.ZodType = z.ZodType> {
   key: AgentKey;
@@ -512,6 +513,7 @@ export const AGENT_DEFINITIONS = {
     tools: ['repository.read', 'ci.status', 'github.pr.read'],
     verify: verifyReleaseReadiness,
   },
-} as const satisfies Record<AgentKey, AgentDefinition>;
+  // workflow_agent lives in workflows/agent.ts: one definition per workflow node with the node's token budget.
+} as const satisfies Record<Exclude<AgentKey, 'workflow_agent'>, AgentDefinition>;
 
 export type AgentDefinitions = typeof AGENT_DEFINITIONS;

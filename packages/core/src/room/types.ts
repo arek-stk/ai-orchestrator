@@ -47,6 +47,8 @@ export const MessageRefsSchema = z
     decisionId: Id.optional(),
     approvalId: Id.optional(),
     conversationId: Id.optional(),
+    workflowId: Id.optional(),
+    workflowRunId: Id.optional(),
     stage: z.string().min(1).max(40).optional(),
     paths: z.array(z.string().min(1).max(300)).max(20).optional(),
   })

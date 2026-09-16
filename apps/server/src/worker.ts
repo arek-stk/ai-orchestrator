@@ -96,13 +96,14 @@ export class WorkerPool {
 
   private async processNext(workerId: string): Promise<boolean> {
     const leaseMs = this.options.leaseMs ?? 15 * 60_000;
-    const [job] = await this.container.queue.claim(workerId, { types: [PIPELINE_STEP_JOB, ...this.container.intelligence.jobTypes], leaseMs });
+    const [job] = await this.container.queue.claim(workerId, { types: [PIPELINE_STEP_JOB, ...this.container.intelligence.jobTypes, ...this.container.workflows.jobTypes], leaseMs });
     if (!job) return false;
 
     const heartbeat = setInterval(() => void this.container.queue.extendLease(job.id, workerId, leaseMs), leaseMs / 3);
     if (job.type !== PIPELINE_STEP_JOB) {
       try {
-        await this.container.intelligence.handleJob(job);
+        if (this.container.workflows.jobTypes.includes(job.type)) await this.container.workflows.handleJob(job);
+        else await this.container.intelligence.handleJob(job);
         await this.container.queue.complete(job.id, workerId);
       } catch (error) {
         this.log.error({ err: error, jobId: job.id, type: job.type }, 'job failed');

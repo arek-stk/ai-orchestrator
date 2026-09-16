@@ -52,6 +52,13 @@ export interface EventPayloads {
   'autopilot.run.started': { sessionId: string; effectiveAutonomy: number; baseAutonomy: number };
   'autopilot.run.parked': { sessionId: string; approvalId: string; action: string; reason: string; expiresAt: string | null };
   'autopilot.run.unparked': { sessionId: string | null; approvalId: string; status: 'approved' | 'rejected' | 'expired' };
+  // Workflows (ADR-037). Content-free: clients load definitions, steps and artifacts through the workflow API.
+  'workflow.saved': { workflowId: string; version: number; status: string };
+  'workflow.deleted': { workflowId: string };
+  'workflow.run.created': { workflowRunId: string; workflowId: string; status: string; mode: 'live' | 'demo' };
+  'workflow.run.started': { workflowRunId: string; workflowId: string; mode: 'live' | 'demo' };
+  'workflow.step.updated': { workflowRunId: string; workflowId: string; nodeId: string; status: string };
+  'workflow.run.finished': { workflowRunId: string; workflowId: string; status: string; costUsd: number; tokens: number };
 }
 
 export type EventType = keyof EventPayloads;

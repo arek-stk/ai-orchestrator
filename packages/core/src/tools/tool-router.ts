@@ -148,6 +148,11 @@ export class ToolRouter {
     return this;
   }
 
+  /** Every tool that has a registered implementation (capability discovery, e.g. workflow tool toggles). */
+  registeredTools(): ToolName[] {
+    return [...this.tools.keys()];
+  }
+
   allowedTools(role: AgentRole): ToolName[] {
     return (this.permissions[role] ?? []).filter((name) => this.tools.has(name));
   }

@@ -48,6 +48,11 @@ export interface RunAgentRequest<S extends z.ZodType> {
   pinnedModelId?: string | null;
   /** Remaining run-level budget, enforced in addition to global/project/task scopes. */
   runBudgetRemainingUsd?: number | null;
+  /**
+   * Restricts routing and the fallback chain to these registry models, e.g. a workflow node bound to one provider
+   * account must never be answered by another vendor. Absent = every model.
+   */
+  allowedModelIds?: readonly string[];
 }
 
 export type AgentFailureKind = 'budget_paused' | 'no_model' | 'provider' | 'invalid_output' | 'verification';
@@ -121,7 +126,7 @@ export class AgentRuntime {
           pinnedModelId: request.pinnedModelId ?? null,
           roleOverrideModelId: request.projectRoleOverrides?.[role] ?? this.deps.globalRoleOverrides()[role] ?? null,
         },
-        this.deps.models(),
+        request.allowedModelIds ? this.deps.models().filter((model) => request.allowedModelIds!.includes(model.id)) : this.deps.models(),
         (model) => this.deps.providers.get(model) !== null,
       );
 

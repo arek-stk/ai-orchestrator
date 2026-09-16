@@ -45,6 +45,7 @@ import { decryptSecret } from './crypto';
 import { EventRelay, LocalEventFanout, PgNotifyEventFanout, type EventFanout } from './event-fanout';
 import { createIntelligence, type Intelligence } from './intelligence';
 import { createServerMetrics, type ServerMetrics } from './metrics';
+import { createWorkflowFeature, type WorkflowFeature } from './workflows';
 import { createDemoGitHub } from './seed';
 
 export interface GlobalSettings {
@@ -73,6 +74,8 @@ export interface Container {
   /** Autopilot / away mode sessions (ADR-034). */
   autopilot: AutopilotService;
   autopilotSessions: DrizzleAutopilotSessionRepository;
+  /** Workflow builder and runner (ADR-037). */
+  workflows: WorkflowFeature;
   github: GitHubPort;
   githubKind: 'octokit' | 'in-memory';
   sandbox: SandboxPort;
@@ -293,6 +296,23 @@ export async function createContainer(config: ServerConfig, overrides: Container
     demoMode: () => !usableRealModel(),
   });
 
+  const workflows = createWorkflowFeature({
+    db: db.db,
+    config,
+    repos,
+    admin,
+    events,
+    queue,
+    clock,
+    runtime,
+    room,
+    registry,
+    providers,
+    autopilotSessions,
+    demoMode: () => !usableRealModel(),
+    registeredTools: () => orchestrator.tools.registeredTools(),
+  });
+
   return {
     config,
     clock,
@@ -310,6 +330,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
     room,
     autopilot,
     autopilotSessions,
+    workflows,
     github,
     githubKind,
     sandbox,

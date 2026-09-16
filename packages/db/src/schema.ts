@@ -61,6 +61,16 @@ import type {
   TaskKind,
   TaskStatus,
   UserRole,
+  NonExecutablePolicy,
+  WorkflowBlocker,
+  WorkflowDefinition,
+  WorkflowNodeType,
+  WorkflowOutputFormat,
+  WorkflowRunLimits,
+  WorkflowRunMode,
+  WorkflowRunStatus,
+  WorkflowStatus,
+  WorkflowStepStatus,
 } from '@orch/core';
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
@@ -727,4 +737,123 @@ export const conversationMessages = pgTable(
       .on(t.conversationId, t.dedupeKey)
       .where(sql`dedupe_key is not null`),
   ],
+);
+
+// ---------------------------------------------------------------------------
+// Workflows: versioned agent DAGs per project and their runs (ADR-037)
+// ---------------------------------------------------------------------------
+
+export const workflows = pgTable(
+  'workflows',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    status: text('status').$type<WorkflowStatus>().notNull().default('draft'),
+    /** Optimistic lock; every save increments it and appends a workflow_versions row. */
+    version: integer('version').notNull().default(1),
+    definition: jsonb('definition').$type<WorkflowDefinition>().notNull(),
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('workflows_project_updated_idx').on(t.projectId, t.updatedAt)],
+);
+
+export const workflowVersions = pgTable(
+  'workflow_versions',
+  {
+    workflowId: text('workflow_id')
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    name: text('name').notNull(),
+    definition: jsonb('definition').$type<WorkflowDefinition>().notNull(),
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.workflowId, t.version] })],
+);
+
+export const workflowRuns = pgTable(
+  'workflow_runs',
+  {
+    id: text('id').primaryKey(),
+    workflowId: text('workflow_id')
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    workflowVersion: integer('workflow_version').notNull(),
+    workflowName: text('workflow_name').notNull(),
+    /** Snapshot of the definition the run executes; later edits never change a run. */
+    definition: jsonb('definition').$type<WorkflowDefinition>().notNull(),
+    status: text('status').$type<WorkflowRunStatus>().notNull(),
+    mode: text('mode').$type<WorkflowRunMode>().notNull(),
+    onNonExecutable: text('on_non_executable').$type<NonExecutablePolicy>().notNull(),
+    limits: jsonb('limits').$type<WorkflowRunLimits>().notNull(),
+    sessionId: text('session_id').references(() => autopilotSessions.id, { onDelete: 'set null' }),
+    blockers: jsonb('blockers').$type<WorkflowBlocker[]>().notNull().default(emptyArray),
+    reason: text('reason'),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+    startedBy: text('started_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [
+    index('workflow_runs_workflow_created_idx').on(t.workflowId, t.createdAt),
+    index('workflow_runs_project_created_idx').on(t.projectId, t.createdAt),
+    index('workflow_runs_session_idx').on(t.sessionId),
+  ],
+);
+
+export const workflowRunSteps = pgTable(
+  'workflow_run_steps',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: 'cascade' }),
+    nodeId: text('node_id').notNull(),
+    /** Definition order, so steps list like the graph. */
+    position: integer('position').notNull(),
+    nodeType: text('node_type').$type<WorkflowNodeType>().notNull(),
+    status: text('status').$type<WorkflowStepStatus>().notNull(),
+    reason: text('reason'),
+    /** Links the step to agent_runs and through them to usage_ledger rows. */
+    agentRunId: text('agent_run_id'),
+    modelId: text('model_id'),
+    provider: text('provider'),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+    summary: text('summary'),
+    attempts: integer('attempts').notNull().default(0),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [uniqueIndex('workflow_run_steps_run_node_uq').on(t.runId, t.nodeId)],
+);
+
+export const workflowArtifacts = pgTable(
+  'workflow_artifacts',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: 'cascade' }),
+    nodeId: text('node_id').notNull(),
+    name: text('name').notNull(),
+    format: text('format').$type<WorkflowOutputFormat>().notNull(),
+    content: text('content').notNull(),
+    size: integer('size').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('workflow_artifacts_run_node_uq').on(t.runId, t.nodeId)],
 );
