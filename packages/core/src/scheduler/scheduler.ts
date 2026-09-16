@@ -20,6 +20,10 @@ export interface SchedulableTask {
   risk: Risk;
   readySince: Date | null;
   createdAt: Date;
+  /** Held tasks are never selected (ADR-030 board rule, planning assistant). Absent = not held. */
+  schedulingHold?: boolean;
+  /** Only orchestrator-owned tasks are selected. Absent = orchestrator. */
+  assigneeType?: 'orchestrator' | 'user' | 'external_ai';
 }
 
 export interface SchedulerWeights {
@@ -58,6 +62,8 @@ export interface SchedulerInput {
   globalCapacity: number;
   globalRunning: number;
   globalBudgetExhausted: boolean;
+  /** Tasks with an active task lease of a person or external AI (ADR-030). */
+  leasedTaskIds?: ReadonlySet<string>;
   weights?: Partial<SchedulerWeights>;
 }
 
@@ -136,6 +142,18 @@ export function schedule(input: SchedulerInput): ScheduleResult {
 
   for (const task of input.tasks) {
     if (!SCHEDULABLE.has(task.status)) continue;
+    if (task.schedulingHold) {
+      skip(task, 'scheduling_hold');
+      continue;
+    }
+    if (task.assigneeType !== undefined && task.assigneeType !== 'orchestrator') {
+      skip(task, `assigned_to_${task.assigneeType}`);
+      continue;
+    }
+    if (input.leasedTaskIds?.has(task.id)) {
+      skip(task, 'task_leased');
+      continue;
+    }
     const project = projects.get(task.projectId);
     if (!project) {
       skip(task, 'project_not_found');

@@ -14,7 +14,7 @@ import type {
   UsageEntry,
 } from './domain/records';
 import type { PipelineRun } from './domain/run';
-import type { Task, TaskInput } from './domain/task';
+import type { NewTaskOptions, Task, TaskInput, TaskPlanningFields } from './domain/task';
 import type { DomainEvent, EventType } from './events/types';
 
 // Ports are implemented by packages/db (persistence) and apps/server (composition).
@@ -62,6 +62,7 @@ export type TaskPatch = Partial<
     | 'prNumber'
     | 'blockedReason'
     | 'readySince'
+    | keyof TaskPlanningFields
   >
 >;
 
@@ -69,7 +70,8 @@ export interface TaskRepository {
   get(id: string): Promise<Task | null>;
   list(filter: TaskFilter): Promise<Task[]>;
   statuses(ids: readonly string[]): Promise<Map<string, TaskStatus>>;
-  create(projectId: string, input: TaskInput, createdBy: string | null): Promise<Task>;
+  /** New tasks start READY and orchestrator-owned unless `options` say otherwise. */
+  create(projectId: string, input: TaskInput, createdBy: string | null, options?: NewTaskOptions): Promise<Task>;
   update(id: string, patch: TaskPatch): Promise<Task>;
   addUsage(id: string, costUsd: number, tokens: number): Promise<void>;
 }

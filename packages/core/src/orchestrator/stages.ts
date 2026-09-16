@@ -4,6 +4,7 @@ import { detectGatedActions, requiresApproval } from '../approval/policy';
 import { runCouncil } from '../agents/council';
 import { AGENT_DEFINITIONS, type AgentInput } from '../agents/definitions';
 import { deferredApprovalExpiry, type AutopilotSession } from '../autopilot/session';
+import { pathLeaseConflicts } from '../board/leases';
 import type { AgentFailure } from '../agents/runtime';
 import {
   AnalysisOutputSchema,
@@ -215,6 +216,28 @@ export async function dependencyGate(ctx: StageContext): Promise<StageOutcome | 
   if (!requiresApproval({ action: 'dependency_addition', autonomyLevel: project.autonomyLevel, gates: project.settings.approvalGates })) return null;
   const details = dependencyApprovalDetails(detection);
   return requestApproval(ctx, 'dependency_addition', describeDependencyFindings(detection.findings), { ...details }, details.highRisk ? 'high' : undefined);
+}
+
+/**
+ * Path leases (ADR-030): when a person or an external AI holds a lease on paths the change set touches, the run waits
+ * instead of writing over their work. It resumes when the lease ends (at the latest at its expiry) and re-checks; the
+ * wait is bounded by the run's stop conditions (maxRuntimeMs) and by the maximum lease duration.
+ */
+export async function leaseGate(ctx: StageContext): Promise<StageOutcome | null> {
+  const { deps, run, project, now } = ctx;
+  if (!deps.leases || run.checkpoint.changeset.length === 0) return null;
+  const active = await deps.leases.listActive({ projectId: project.id, scope: 'paths', limit: 500 }, now);
+  const conflicts = pathLeaseConflicts(active, run.checkpoint.changeset.map((c) => c.path), 'orchestrator', now);
+  if (conflicts.length === 0) return null;
+  const earliest = Math.min(...conflicts.map((c) => c.lease.expiresAt.getTime()));
+  const resumeAt = new Date(Math.max(now.getTime() + 1000, Math.min(earliest, now.getTime() + ctx.options.waitRetryMs)));
+  const first = conflicts[0]!;
+  const more = conflicts.length > 1 ? ` and ${conflicts.length - 1} more lease(s)` : '';
+  return {
+    kind: 'wait',
+    summary: truncate(`Waiting for ${first.lease.holderName}'s lease on ${first.paths.slice(0, 3).join(', ')}${more} (expires ${first.lease.expiresAt.toISOString()}).`, 500),
+    resumeAt,
+  };
 }
 
 async function applyChanges(
@@ -608,6 +631,8 @@ export const implementStage: StageHandler = async (ctx) => {
   }
   const dependencies = await dependencyGate(ctx);
   if (dependencies) return dependencies;
+  const leased = await leaseGate(ctx);
+  if (leased) return leased;
   return passed(`${run.checkpoint.changeset.length} file(s) in the change set.`);
 };
 

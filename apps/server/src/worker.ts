@@ -61,6 +61,9 @@ export class WorkerPool {
       // Autopilot stop conditions first, so a session that just ran out of time or budget starts nothing new.
       const autopilot = await this.container.autopilot.tick();
       if (autopilot.stopped > 0 || autopilot.killed > 0) this.log.info(autopilot, 'autopilot sessions ended');
+      // Expired leases end before scheduling, so their tasks become schedulable in this tick (ADR-030).
+      const reaped = await this.container.leases.reap();
+      if (reaped > 0) this.log.info({ reaped }, 'leases expired');
       const result = await this.container.orchestrator.tick();
       if (result.started.length > 0 || result.recovered > 0) this.log.info(result, 'scheduler tick');
       await this.container.admin.sessions.deleteExpired(this.container.clock.now());

@@ -33,9 +33,51 @@ export interface Task {
   prNumber: number | null;
   blockedReason: string | null;
   readySince: Date | null;
+  // Planning fields (ADR-030 stage 2): the board, milestones and roadmap are views over tasks.
+  /** Who owns the work. The scheduler only starts tasks owned by the orchestrator. */
+  assigneeType: AssigneeType;
+  /** User id (or AI identity id, stage 3) for non-orchestrator assignees. */
+  assigneeId: string | null;
+  milestoneId: string | null;
+  /** Order within the board column (ascending); null = default order (priority, age). */
+  boardPosition: number | null;
+  estimatePoints: EstimatePoints | null;
+  labels: string[];
+  /** Calendar date `YYYY-MM-DD`. */
+  dueDate: string | null;
+  /** Held tasks are never picked by the scheduler or the autopilot; only a human releases them. */
+  schedulingHold: boolean;
+  holdReason: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export const ASSIGNEE_TYPES = ['orchestrator', 'user', 'external_ai'] as const;
+export type AssigneeType = (typeof ASSIGNEE_TYPES)[number];
+
+export const ESTIMATE_POINTS = [1, 2, 3, 5, 8, 13] as const;
+export type EstimatePoints = (typeof ESTIMATE_POINTS)[number];
+
+/** Planning fields that can be set when a task is created (defaults: orchestrator-owned, no milestone, not held). */
+export type TaskPlanningFields = Pick<
+  Task,
+  'assigneeType' | 'assigneeId' | 'milestoneId' | 'boardPosition' | 'estimatePoints' | 'labels' | 'dueDate' | 'schedulingHold' | 'holdReason'
+>;
+
+export const DEFAULT_TASK_PLANNING: Readonly<TaskPlanningFields> = Object.freeze({
+  assigneeType: 'orchestrator',
+  assigneeId: null,
+  milestoneId: null,
+  boardPosition: null,
+  estimatePoints: null,
+  labels: [],
+  dueDate: null,
+  schedulingHold: false,
+  holdReason: null,
+});
+
+/** Options for creating a task: planning fields and the initial status (default READY). */
+export type NewTaskOptions = Partial<TaskPlanningFields> & { status?: 'BACKLOG' | 'READY' };
 
 export const TaskInputSchema = z.object({
   title: z.string().trim().min(3).max(200),

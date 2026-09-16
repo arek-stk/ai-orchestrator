@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  date,
   doublePrecision,
   index,
   integer,
@@ -18,6 +19,12 @@ import {
 import type {
   AgentRole,
   AgentRunStatus,
+  AssigneeType,
+  EstimatePoints,
+  LeaseEndReason,
+  LeaseHolderType,
+  LeaseScope,
+  MilestoneStatus,
   ApprovalAction,
   ApprovalMode,
   ApprovalStatus,
@@ -175,6 +182,17 @@ export const tasks = pgTable(
     prNumber: integer('pr_number'),
     blockedReason: text('blocked_reason'),
     readySince: ts('ready_since'),
+    // Planning fields (ADR-030 stage 2).
+    assigneeType: text('assignee_type').$type<AssigneeType>().notNull().default('orchestrator'),
+    assigneeId: text('assignee_id'),
+    milestoneId: text('milestone_id').references((): AnyPgColumn => milestones.id, { onDelete: 'set null' }),
+    boardPosition: doublePrecision('board_position'),
+    estimatePoints: integer('estimate_points').$type<EstimatePoints>(),
+    labels: jsonb('labels').$type<string[]>().notNull().default(emptyArray),
+    dueDate: date('due_date', { mode: 'string' }),
+    /** Held tasks are never selected by the scheduler or the autopilot (planning assistant F1, ADR-030 board rule). */
+    schedulingHold: boolean('scheduling_hold').notNull().default(false),
+    holdReason: text('hold_reason'),
     createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -183,6 +201,58 @@ export const tasks = pgTable(
     index('tasks_project_status_idx').on(t.projectId, t.status),
     index('tasks_status_idx').on(t.status),
     index('tasks_parent_idx').on(t.parentId),
+    index('tasks_milestone_idx').on(t.milestoneId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Board planning: milestones and leases (ADR-030 stage 2)
+// ---------------------------------------------------------------------------
+
+export const milestones = pgTable(
+  'milestones',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    description: text('description').notNull().default(''),
+    status: text('status').$type<MilestoneStatus>().notNull().default('planned'),
+    startDate: date('start_date', { mode: 'string' }),
+    dueDate: date('due_date', { mode: 'string' }),
+    position: doublePrecision('position').notNull().default(0),
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('milestones_project_position_idx').on(t.projectId, t.position)],
+);
+
+export const leases = pgTable(
+  'leases',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    holderType: text('holder_type').$type<LeaseHolderType>().notNull(),
+    holderId: text('holder_id').notNull(),
+    holderName: text('holder_name').notNull(),
+    scope: text('scope').$type<LeaseScope>().notNull(),
+    taskId: text('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+    pathGlobs: jsonb('path_globs').$type<string[]>().notNull().default(emptyArray),
+    reason: text('reason').notNull().default(''),
+    expiresAt: ts('expires_at').notNull(),
+    heartbeatAt: ts('heartbeat_at').notNull().defaultNow(),
+    createdAt: createdAt(),
+    releasedAt: ts('released_at'),
+    releasedBy: text('released_by'),
+    endReason: text('end_reason').$type<LeaseEndReason>(),
+  },
+  (t) => [
+    index('leases_project_active_idx').on(t.projectId, t.expiresAt).where(sql`released_at is null`),
+    index('leases_task_idx').on(t.taskId),
   ],
 );
 

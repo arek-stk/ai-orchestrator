@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 import {
   AgentRuntime,
   AutopilotService,
+  BoardService,
   DEFAULT_MODEL_CONFIGS,
   EventBus,
+  LeaseService,
   ModelRegistry,
   Orchestrator,
   RepoIndexer,
@@ -28,6 +30,7 @@ import {
 } from '@orch/core';
 import {
   createAdminRepositories,
+  createBoardRepositories,
   createConversationRepositories,
   createDatabase,
   createHealthRepositories,
@@ -35,6 +38,7 @@ import {
   DrizzleAutopilotSessionRepository,
   PgJobQueue,
   type AdminRepositories,
+  type BoardRepositories,
   type DatabaseHandle,
   type DrizzleEventStore,
   type Repositories,
@@ -70,6 +74,11 @@ export interface Container {
   intelligence: Intelligence;
   /** Project Room (ADR-030): typed conversation messages; orchestrator events are projected into it. */
   room: RoomService;
+  /** Kanban board, milestones and holds (ADR-030 stage 2). */
+  board: BoardService;
+  /** Task and path leases (ADR-030 stage 2). */
+  leases: LeaseService;
+  boardRepos: BoardRepositories;
   /** Autopilot / away mode sessions (ADR-034). */
   autopilot: AutopilotService;
   autopilotSessions: DrizzleAutopilotSessionRepository;
@@ -165,6 +174,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
   const admin = createAdminRepositories(db.db);
   const health = createHealthRepositories(db.db);
   const autopilotSessions = new DrizzleAutopilotSessionRepository(db.db);
+  const boardRepos = createBoardRepositories(db.db);
   await admin.models.seedDefaults(DEFAULT_MODEL_CONFIGS);
 
   const metrics = createServerMetrics();
@@ -276,9 +286,23 @@ export async function createContainer(config: ServerConfig, overrides: Container
     globalBudgetExhausted: async () =>
       settings.globalDailyBudgetUsd > 0 && (await repos.usage.totalCostSince(startOfDay())) >= settings.globalDailyBudgetUsd,
     autopilotSessions,
+    leases: boardRepos.leases,
     audit: (entry) => admin.audit.record(entry),
     options: { globalCapacity: settings.globalCapacity, approvalTtlMs: config.approvalTtlMs, autopilot: config.autopilot },
   });
+
+  // Board and lease changes go through the projecting recorder: they reach the room as deduplicated notices.
+  const board = new BoardService({
+    projects: repos.projects,
+    tasks: repos.tasks,
+    runs: repos.runs,
+    milestones: boardRepos.milestones,
+    leases: boardRepos.leases,
+    events,
+    clock,
+    cancelRun: (runId, reason) => orchestrator.cancel(runId, reason),
+  });
+  const leases = new LeaseService({ leases: boardRepos.leases, tasks: repos.tasks, events, clock });
 
   const intelligence = createIntelligence({ repos, admin, health, events, queue, clock, runtime, github, repoIndex });
   const autopilot = new AutopilotService({
@@ -308,6 +332,9 @@ export async function createContainer(config: ServerConfig, overrides: Container
     orchestrator,
     intelligence,
     room,
+    board,
+    leases,
+    boardRepos,
     autopilot,
     autopilotSessions,
     github,

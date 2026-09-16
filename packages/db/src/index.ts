@@ -8,3 +8,4 @@ export * from './repositories';
 export * from './health-repositories';
 export * as schema from './schema';
 export * from './conversation-repositories';
+export * from './board-repositories';

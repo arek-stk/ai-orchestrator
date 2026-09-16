@@ -1,4 +1,8 @@
-import type { AgentRole, RunStage, StageStatus } from '../domain/enums';
+import type { BoardColumn } from '../board/board';
+import type { LeaseHolderType, LeaseScope } from '../board/leases';
+import type { MilestoneStatus } from '../board/milestones';
+import type { AgentRole, RunStage, StageStatus, TaskStatus } from '../domain/enums';
+import type { AssigneeType } from '../domain/task';
 import type { GatedAction } from '../domain/project';
 import type { MessageAuthorType, MessageIntent } from '../room/types';
 
@@ -44,6 +48,15 @@ export interface EventPayloads {
   'research.completed': { memoryKey: string; question: string; confidence: number };
   /** Content-free: clients load the message through the room API (ADR-030). */
   'room.message': { conversationId: string; messageId: string; seq: number; threadId: string | null; authorType: MessageAuthorType; authorName: string; intent: MessageIntent };
+  // Board, milestones and leases (ADR-030 stage 2). `by` is the acting user's login.
+  'task.moved': { title: string; from: BoardColumn; to: BoardColumn; fromStatus: TaskStatus; toStatus: TaskStatus; position: number; schedulingHold: boolean; schedulable: boolean; cancelledRuns: number; by: string };
+  'task.assigned': { title: string; assigneeType: AssigneeType; assigneeId: string | null; assigneeName: string | null; previousType: AssigneeType; previousId: string | null; schedulingHold: boolean; by: string };
+  'task.hold_changed': { title: string; hold: boolean; reason: string | null; by: string };
+  'task.planning_updated': { fields: string[]; by: string };
+  'milestone.updated': { milestoneId: string; title: string; change: 'created' | 'updated' | 'deleted'; status: MilestoneStatus; previousStatus: MilestoneStatus | null; by: string };
+  'lease.acquired': { leaseId: string; scope: LeaseScope; holderType: LeaseHolderType; holderName: string; paths: string[]; expiresAt: string; reason: string };
+  'lease.released': { leaseId: string; scope: LeaseScope; holderType: LeaseHolderType; holderName: string; broken: boolean; by: string };
+  'lease.expired': { leaseId: string; scope: LeaseScope; holderType: LeaseHolderType; holderName: string };
   // Autopilot (away mode). Session events are emitted once per project in scope so per-project ACLs apply.
   'autopilot.session.started': { sessionId: string; endsAt: string; budgetUsd: number; effectiveAutonomy: number; demo: boolean };
   'autopilot.session.resumed': { sessionId: string; reason: string };
