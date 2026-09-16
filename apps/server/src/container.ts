@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   AgentRuntime,
   AutopilotService,
+  CouncilRoomPublisher,
   DEFAULT_MODEL_CONFIGS,
   EventBus,
   ModelRegistry,
@@ -30,6 +31,8 @@ import {
   createAdminRepositories,
   createConversationRepositories,
   createDatabase,
+  createLadderRepositories,
+  type LadderRepositories,
   createHealthRepositories,
   createRepositories,
   DrizzleAutopilotSessionRepository,
@@ -73,6 +76,8 @@ export interface Container {
   /** Autopilot / away mode sessions (ADR-034). */
   autopilot: AutopilotService;
   autopilotSessions: DrizzleAutopilotSessionRepository;
+  /** Decision requests and councils of the autopilot decision ladder (stage 2+3). */
+  ladder: LadderRepositories;
   github: GitHubPort;
   githubKind: 'octokit' | 'in-memory';
   sandbox: SandboxPort;
@@ -165,6 +170,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
   const admin = createAdminRepositories(db.db);
   const health = createHealthRepositories(db.db);
   const autopilotSessions = new DrizzleAutopilotSessionRepository(db.db);
+  const ladder = createLadderRepositories(db.db);
   await admin.models.seedDefaults(DEFAULT_MODEL_CONFIGS);
 
   const metrics = createServerMetrics();
@@ -276,6 +282,13 @@ export async function createContainer(config: ServerConfig, overrides: Container
     globalBudgetExhausted: async () =>
       settings.globalDailyBudgetUsd > 0 && (await repos.usage.totalCostSince(startOfDay())) >= settings.globalDailyBudgetUsd,
     autopilotSessions,
+    // Autopilot stage 2+3: questions of session runs climb the decision ladder; council transcripts go to the room.
+    decisionLadder: {
+      requests: ladder.decisionRequests,
+      councils: ladder.councils,
+      sink: new CouncilRoomPublisher(room),
+      onError: (error) => console.error('council room projection failed:', error),
+    },
     audit: (entry) => admin.audit.record(entry),
     options: { globalCapacity: settings.globalCapacity, approvalTtlMs: config.approvalTtlMs, autopilot: config.autopilot },
   });
@@ -291,6 +304,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
     pauseRun: (runId, reason) => orchestrator.pause(runId, reason),
     audit: (entry) => admin.audit.record(entry),
     demoMode: () => !usableRealModel(),
+    decisions: repos.decisions,
   });
 
   return {
@@ -310,6 +324,7 @@ export async function createContainer(config: ServerConfig, overrides: Container
     room,
     autopilot,
     autopilotSessions,
+    ladder,
     github,
     githubKind,
     sandbox,

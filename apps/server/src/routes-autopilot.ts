@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   AUTOPILOT_SESSION_STATUSES,
+  DECISION_REQUEST_STATUSES,
   autopilotStartSchema,
   effectiveAutonomy,
   filterAutopilotDigest,
@@ -33,7 +34,7 @@ const PARKED_FOR_HUMANS = [
  * project they operate. Every read and action goes through the per-project access control (ADR-022).
  */
 export async function registerAutopilotRoutes(app: FastifyInstance, container: Container): Promise<void> {
-  const { repos, admin, autopilot, autopilotSessions, config } = container;
+  const { repos, admin, autopilot, autopilotSessions, ladder, config } = container;
   const acl = createProjectAcl(config.projectAcl, admin);
   const limited = (max: number) => ({ rateLimit: { max, timeWindow: '1 minute' } });
   const viewer = { preHandler: requireRole('viewer') };
@@ -156,6 +157,77 @@ export async function registerAutopilotRoutes(app: FastifyInstance, container: C
     }
     const killed = await autopilot.killAll(actor(request), (session) => operableIn(visible, session));
     return { killed: killed.map((k) => ({ sessionId: k.session.id, pausedRuns: k.pausedRuns })) };
+  });
+
+  // -------------------------------------------------------------------------
+  // Decision ladder and council protocol v2 (stage 2+3)
+  // -------------------------------------------------------------------------
+
+  const REQUEST_LIST_LIMIT = 100;
+  const MAX_TURNS_SHOWN = 32;
+
+  /** Decision requests the viewer may see: filtered to visible projects; `sessionId` requires a visible session. */
+  app.get('/api/autopilot/decision-requests', viewer, async (request, reply) => {
+    const query = z
+      .object({
+        sessionId: z.string().min(1).max(100).optional(),
+        projectId: z.string().min(1).max(100).optional(),
+        status: z.enum(DECISION_REQUEST_STATUSES).optional(),
+        limit: z.coerce.number().int().min(1).max(REQUEST_LIST_LIMIT).default(50),
+      })
+      .parse(request.query);
+    const statuses = query.status ? { statuses: [query.status] } : {};
+    if (query.sessionId) {
+      const found = await loadVisible(request, reply, query.sessionId);
+      if (!found) return reply;
+      if (query.projectId) await acl.assertProject(request, query.projectId);
+      // A session holds a bounded number of requests; hidden projects are filtered out.
+      const rows = await ladder.decisionRequests.list({ sessionId: query.sessionId, ...(query.projectId ? { projectId: query.projectId } : {}), ...statuses, limit: 500 });
+      return { requests: rows.filter((r) => found.visible === null || found.visible.has(r.projectId)).slice(0, query.limit) };
+    }
+    const requests = await acl.scopedList(request, query.projectId, (projectId) => ladder.decisionRequests.list({ ...(projectId ? { projectId } : {}), ...statuses, limit: query.limit }), {
+      limit: query.limit,
+      sortKey: (r) => r.createdAt.getTime(),
+    });
+    return { requests };
+  });
+
+  /** One request with its council and the append-only transcript (model text is plain data; the UI renders text nodes). */
+  app.get('/api/autopilot/decision-requests/:id', viewer, async (request, reply) => {
+    const { id } = IdParams.parse(request.params);
+    const found = await ladder.decisionRequests.get(id);
+    if (!found) return reply.code(404).send({ error: 'decision request not found' });
+    await acl.assertProject(request, found.projectId, 'viewer', 'decision request');
+    const councils = await ladder.councils.list({ requestId: found.id, limit: 3 });
+    const withTurns = await Promise.all(councils.map(async (council) => ({ ...council, turns: (await ladder.councils.turns(council.id)).slice(0, MAX_TURNS_SHOWN) })));
+    return { request: found, councils: withTurns };
+  });
+
+  /**
+   * Human review of a provisional decision from the return digest (admin, as for approvals). Confirming keeps it as
+   * decision memory; rejecting removes it from reuse. Neither touches gates, approvals or autonomy.
+   */
+  const reviewBody = z.object({ comment: z.string().trim().max(1_000).optional() });
+  const rejectBody = z.object({ reason: z.string().trim().min(3).max(1_000) });
+
+  async function reviewDecision(request: FastifyRequest, reply: FastifyReply, verdict: 'confirmed' | 'rejected', comment: string | null) {
+    const { id } = IdParams.parse(request.params);
+    const decision = await repos.decisions.get(id);
+    if (!decision) return reply.code(404).send({ error: 'decision not found' });
+    await acl.assertProject(request, decision.projectId, 'admin', 'decision');
+    const result = await autopilot.reviewDecision(id, verdict, actor(request), comment);
+    if (!result.ok) return reply.code(result.status).send({ error: result.error });
+    return { decision: result.decision };
+  }
+
+  app.post('/api/autopilot/decisions/:id/confirm', adminMutation, async (request, reply) => {
+    const { comment } = reviewBody.parse(request.body ?? {});
+    return reviewDecision(request, reply, 'confirmed', comment ? comment : null);
+  });
+
+  app.post('/api/autopilot/decisions/:id/reject', adminMutation, async (request, reply) => {
+    const { reason } = rejectBody.parse(request.body ?? {});
+    return reviewDecision(request, reply, 'rejected', reason);
   });
 
   app.get('/api/autopilot/sessions/:id/digest', { preHandler: requireRole('viewer'), config: limited(60) }, async (request, reply) => {
