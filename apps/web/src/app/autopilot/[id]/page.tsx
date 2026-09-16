@@ -3,12 +3,13 @@
 import { useParams } from 'next/navigation';
 import { CircleParking, FlaskConical, GitPullRequest, Plane, TriangleAlert } from 'lucide-react';
 import { autopilotEvent, formatRemaining, KillSwitch, sessionStopText, StopButton } from '@/components/autopilot';
+import { DecisionReviewList, QuestionList } from '@/components/autopilot-decisions';
 import { ApprovalStatusBadge, RunStatusBadge, useProjectNames } from '@/components/domain';
 import { hasRole, useSession } from '@/components/providers';
 import { useBreadcrumb } from '@/components/shell';
 import { Card, EmptyState, ErrorBanner, KeyValues, Loading, Meter, PageHeader, Refreshable, RelativeTime, StatTile, StatusBadge, TableWrap, td, TextLink, th, useNow } from '@/components/ui';
 import { useApi } from '@/hooks/use-api';
-import { formatAbsolute, formatConfidence, formatUsd, humanize } from '@/lib/format';
+import { formatAbsolute, formatUsd, humanize } from '@/lib/format';
 import { autopilotStatusTone, budgetTone } from '@/lib/status';
 import type { AutopilotDigest, AutopilotSessionView } from '@/lib/types';
 
@@ -50,7 +51,7 @@ export default function AutopilotSessionPage() {
         description={
           <>
             {formatAbsolute(d.window.startsAt)} to {formatAbsolute(d.window.endedAt ?? d.window.endsAt)}.{' '}
-            {active ? `${formatRemaining(s.endsAt, now)}.` : null} All figures are aggregates of recorded runs, approvals and the usage ledger; nothing here is AI-written.
+            {active ? `${formatRemaining(s.endsAt, now)}.` : null} All figures are aggregates of recorded runs, approvals, decisions and the usage ledger; only decision texts quote the agents.
           </>
         }
         meta={
@@ -77,7 +78,7 @@ export default function AutopilotSessionPage() {
           <StatTile label="Pull requests" value={<span className="tabular">{d.totals.pullRequests}</span>} icon={GitPullRequest} />
           <StatTile label="Parked for you" value={<span className="tabular">{d.parkedApprovals.filter((a) => a.status === 'pending').length}</span>} sublabel={`${d.totals.parked} parked runs`} icon={CircleParking} />
           <StatTile label="Blocked or failed" value={<span className="tabular">{d.totals.failed}</span>} icon={TriangleAlert} />
-          <StatTile label="Decisions" value={<span className="tabular">{d.totals.decisions}</span>} />
+          <StatTile label="Decisions to review" value={<span className="tabular">{d.totals.decisionsToReview}</span>} sublabel={`${d.totals.decisions} decisions · ${d.totals.questionsParked} questions parked`} />
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -205,21 +206,16 @@ export default function AutopilotSessionPage() {
           )}
         </Card>
 
-        {d.decisions.length > 0 ? (
-          <Card title="Decisions" description="Design decisions recorded by session runs.">
-            <ul className="divide-y divide-line">
-              {d.decisions.map((decision) => (
-                <li key={decision.decisionId} className="py-3">
-                  <p className="text-[13px] font-medium text-ink">{decision.question}</p>
-                  <p className="mt-0.5 text-[13px] text-ink-2">
-                    {decision.decision} · {formatConfidence(decision.confidence)} confidence
-                  </p>
-                  <p className="mt-1 text-xs text-ink-2">{project(decision.projectId)}</p>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        ) : null}
+        <Card
+          title="Decided while you were away"
+          description="Provisional decisions from precedent, repository research or a council with a critic. Confirm or reject them; nothing here approved a gated action."
+        >
+          <DecisionReviewList decisions={d.decisions} canReview={hasRole(user, 'admin')} projectLink={project} onChanged={reload} />
+        </Card>
+
+        <Card title="Questions" description={`Questions the decision ladder handled (${formatUsd(d.costs.decisionsUsd)} spent on precedent checks, research and councils).`}>
+          <QuestionList questions={d.questions} projectLink={project} />
+        </Card>
       </Refreshable>
     </>
   );

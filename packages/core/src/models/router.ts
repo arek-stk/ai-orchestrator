@@ -19,6 +19,16 @@ export interface RoutingRequest {
   roleOverrideModelId?: string | null;
   /** Models that already failed for this step (e.g. provider outage). */
   excludeModelIds?: readonly string[];
+  /**
+   * Model diversity for councils (docs/plans/autopilot.md §4.2): providers and models this call must not use, e.g. a
+   * critic avoiding the members' providers. A hard filter, so it also applies to the fallback chain.
+   */
+  diversity?: RoutingDiversity;
+}
+
+export interface RoutingDiversity {
+  avoidProviders?: readonly string[];
+  avoidModelIds?: readonly string[];
 }
 
 export interface CandidateEvaluation {
@@ -76,10 +86,11 @@ export const ROLE_BASE_TIER: Readonly<Record<AgentRole, ModelTier>> = Object.fre
   documentation: 'fast',
   devops: 'balanced',
   release: 'balanced',
+  critic: 'reasoning',
 });
 
 const CODING_ROLES: ReadonlySet<AgentRole> = new Set(['builder', 'frontend', 'backend', 'database', 'tester', 'debugger', 'devops']);
-const REASONING_ROLES: ReadonlySet<AgentRole> = new Set(['orchestrator', 'planner', 'architect', 'security', 'reviewer']);
+const REASONING_ROLES: ReadonlySet<AgentRole> = new Set(['orchestrator', 'planner', 'architect', 'security', 'reviewer', 'critic']);
 const LATENCY_RANK = { low: 0, medium: 1, high: 2 } as const;
 
 export function requiredTier(request: Pick<RoutingRequest, 'role' | 'complexity' | 'risk' | 'priorFailures'>): ModelTier {
@@ -109,6 +120,8 @@ export function selectModel(
 ): RoutingDecision {
   const floor = TIER_QUALITY_FLOOR[requiredTier(request)];
   const excluded = new Set(request.excludeModelIds ?? []);
+  const avoidProviders = new Set<string>(request.diversity?.avoidProviders ?? []);
+  const avoidModels = new Set<string>(request.diversity?.avoidModelIds ?? []);
   const requiredContext = request.estimatedInputTokens + request.expectedOutputTokens;
 
   const candidates: CandidateEvaluation[] = models.map((model) => {
@@ -118,6 +131,8 @@ export function selectModel(
 
     if (!model.enabled) return reject('disabled');
     if (excluded.has(model.id)) return reject('excluded after failure');
+    if (avoidProviders.has(model.provider)) return reject(`provider ${model.provider} avoided for diversity`);
+    if (avoidModels.has(model.id)) return reject('model avoided for diversity');
     if (!isProviderAvailable(model)) return reject(`provider ${model.provider} not configured`);
     if (model.contextWindow < requiredContext) return reject(`context window ${model.contextWindow} < ${requiredContext}`);
     if (model.maxOutputTokens < request.expectedOutputTokens) return reject(`max output ${model.maxOutputTokens} < ${request.expectedOutputTokens}`);

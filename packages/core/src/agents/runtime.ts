@@ -3,7 +3,7 @@ import { checkBudget, type BudgetScope } from '../budget/budget-guard';
 import type { AgentRole, Complexity, Risk } from '../domain/enums';
 import { ProviderError, type ProviderResolver } from '../models/provider';
 import { computeCostUsd, estimateTokens } from '../models/registry';
-import { NoEligibleModelError, selectModel, type RoutingDecision } from '../models/router';
+import { NoEligibleModelError, selectModel, type RoutingDecision, type RoutingDiversity } from '../models/router';
 import { addUsage, totalTokens, ZERO_USAGE, type ModelConfig, type TokenUsage } from '../models/types';
 import { systemClock, type AgentRunRepository, type Clock, type EventRecorder, type UsageRepository } from '../ports';
 import { agentCacheKey, agentPromptHash, NON_CACHEABLE_AGENT_KEYS, type AgentCacheStore } from './cache';
@@ -48,6 +48,8 @@ export interface RunAgentRequest<S extends z.ZodType> {
   pinnedModelId?: string | null;
   /** Remaining run-level budget, enforced in addition to global/project/task scopes. */
   runBudgetRemainingUsd?: number | null;
+  /** Council model diversity: providers and models this call must avoid (hard routing filter, fallbacks included). */
+  diversity?: RoutingDiversity;
 }
 
 export type AgentFailureKind = 'budget_paused' | 'no_model' | 'provider' | 'invalid_output' | 'verification';
@@ -120,6 +122,7 @@ export class AgentRuntime {
           maxCostUsd,
           pinnedModelId: request.pinnedModelId ?? null,
           roleOverrideModelId: request.projectRoleOverrides?.[role] ?? this.deps.globalRoleOverrides()[role] ?? null,
+          ...(request.diversity ? { diversity: request.diversity } : {}),
         },
         this.deps.models(),
         (model) => this.deps.providers.get(model) !== null,

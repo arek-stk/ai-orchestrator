@@ -94,6 +94,13 @@ attempt, never silently accepted.
 confidence. Below threshold after max rounds → one targeted expert, then escalate to human.
 Only the orchestrator writes the `decisions` row.
 
+Inside an active autopilot session, DESIGN questions climb the **decision ladder** instead (ADR-034 addendum,
+`packages/core/src/autopilot/ladder.ts`): precedent (accepted ADRs, `docs/STATE.md`, decision memory) → evidenced
+repository research → **council protocol v2** (`council-protocol.ts`: blind proposals, a critic routed to another
+provider, deterministic evidence verification, votes, pure `decideCouncil`) → park as a deferred approval. Outcomes are
+provisional decisions that a human confirms or rejects in the return digest; transcripts are append-only
+`council_turns`, projected as one thread into the Project Room.
+
 ### 4.6 Model layer: swappable models & providers (ADR-005)
 * **Providers are adapters** behind the `ModelProvider` port: Anthropic, OpenAI, Google Gemini,
   any OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, OpenRouter, Mistral, DeepSeek, Groq…), Mock.

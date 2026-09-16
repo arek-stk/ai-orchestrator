@@ -45,6 +45,18 @@ export function describeEvent(event: DomainEvent): string {
       return `Review completed: ${humanize(str(p.verdict))}, ${num(p.issues)} issue(s)`;
     case 'decision.made':
       return `Decision made (${formatConfidence(num(p.confidence))}): ${str(p.question)}`;
+    case 'decision_request.created':
+      return `Question raised (${humanize(str(p.kind))}): ${str(p.question)}`;
+    case 'decision_request.resolved':
+      return `Question settled via ${humanize(str(p.rung)).toLowerCase()}`;
+    case 'decision_request.parked':
+      return `Question parked for a human: ${humanize(str(p.reason))}`;
+    case 'council.started':
+      return `Council convened with ${Array.isArray(p.members) ? p.members.map((m) => humanize(str(m))).join(', ') : 'members'} and a critic`;
+    case 'council.finished':
+      return `Council ${str(p.outcome)} (${humanize(str(p.diversity)).toLowerCase()}, ${formatConfidence(num(p.confidence))})`;
+    case 'decision.reviewed':
+      return `Provisional decision ${str(p.status)} by ${str(p.by)}`;
     case 'github.branch.created':
       return `Branch ${str(p.branch)} created`;
     case 'github.push':

@@ -58,6 +58,23 @@ import type {
   StageState,
   StagePlanItem,
   StopConditions,
+  CouncilDecisionType,
+  CouncilDiversity,
+  CouncilOption,
+  CouncilParkReason,
+  CouncilParticipant,
+  CouncilStatus,
+  CouncilTurnKind,
+  CouncilTurnRecord,
+  DecisionNature,
+  DecisionOrigin,
+  DecisionRequestKind,
+  DecisionRequestStatus,
+  DecisionStatus,
+  LadderAdvisory,
+  LadderAnswer,
+  LadderRung,
+  LadderStep,
   TaskKind,
   TaskStatus,
   UserRole,
@@ -343,9 +360,120 @@ export const decisions = pgTable(
     confidence: real('confidence').notNull(),
     costUsd: doublePrecision('cost_usd').notNull().default(0),
     supersedesId: text('supersedes_id'),
+    /** pipeline | autopilot_precedent | autopilot_research | autopilot_council | human (autopilot stage 2). */
+    origin: text('origin').$type<DecisionOrigin>().notNull().default('pipeline'),
+    /** active | provisional (settled while away, waiting for human review) | confirmed | rejected. */
+    status: text('status').$type<DecisionStatus>().notNull().default('active'),
+    sessionId: text('session_id').references(() => autopilotSessions.id, { onDelete: 'set null' }),
+    requestId: text('request_id'),
+    councilId: text('council_id'),
+    adrRefs: jsonb('adr_refs').$type<string[]>().notNull().default(emptyArray),
+    reviewedBy: text('reviewed_by'),
+    reviewedAt: ts('reviewed_at'),
+    reviewComment: text('review_comment'),
     createdAt: createdAt(),
   },
-  (t) => [index('decisions_project_key_idx').on(t.projectId, t.questionKey), index('decisions_task_idx').on(t.taskId)],
+  (t) => [
+    index('decisions_project_key_idx').on(t.projectId, t.questionKey),
+    index('decisions_task_idx').on(t.taskId),
+    index('decisions_session_idx').on(t.sessionId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Autopilot decision ladder and council protocol v2 (docs/plans/autopilot.md §9.1)
+// ---------------------------------------------------------------------------
+
+export const decisionRequests = pgTable(
+  'decision_requests',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sessionId: text('session_id').references(() => autopilotSessions.id, { onDelete: 'set null' }),
+    taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+    runId: text('run_id').references(() => pipelineRuns.id, { onDelete: 'set null' }),
+    kind: text('kind').$type<DecisionRequestKind>().notNull(),
+    nature: text('nature').$type<DecisionNature>().notNull(),
+    question: text('question').notNull(),
+    options: jsonb('options').$type<CouncilOption[]>().notNull().default(emptyArray),
+    fingerprint: text('fingerprint').notNull(),
+    status: text('status').$type<DecisionRequestStatus>().notNull().default('open'),
+    rung: text('rung').$type<LadderRung>(),
+    trail: jsonb('trail').$type<LadderStep[]>().notNull().default(emptyArray),
+    answer: jsonb('answer').$type<LadderAnswer>(),
+    parkReason: text('park_reason'),
+    advisory: jsonb('advisory').$type<LadderAdvisory>(),
+    decisionId: text('decision_id').references(() => decisions.id, { onDelete: 'set null' }),
+    approvalId: text('approval_id').references(() => approvals.id, { onDelete: 'set null' }),
+    councilId: text('council_id'),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    createdAt: createdAt(),
+    resolvedAt: ts('resolved_at'),
+  },
+  (t) => [
+    // Identical questions from several runs resolve once (dedupe while open or resolving).
+    uniqueIndex('decision_requests_open_fingerprint_uq')
+      .on(t.projectId, t.fingerprint)
+      .where(sql`status in ('open', 'resolving')`),
+    index('decision_requests_session_idx').on(t.sessionId, t.createdAt),
+    index('decision_requests_project_status_idx').on(t.projectId, t.status),
+  ],
+);
+
+export const councilSessions = pgTable(
+  'council_sessions',
+  {
+    id: text('id').primaryKey(),
+    requestId: text('request_id')
+      .notNull()
+      .references(() => decisionRequests.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sessionId: text('session_id').references(() => autopilotSessions.id, { onDelete: 'set null' }),
+    runId: text('run_id').references(() => pipelineRuns.id, { onDelete: 'set null' }),
+    decisionType: text('decision_type').$type<CouncilDecisionType>().notNull(),
+    protocolVersion: integer('protocol_version').notNull(),
+    question: text('question').notNull(),
+    participants: jsonb('participants').$type<CouncilParticipant[]>().notNull().default(emptyArray),
+    diversity: text('diversity').$type<CouncilDiversity>(),
+    status: text('status').$type<CouncilStatus>().notNull().default('running'),
+    chosenOptionId: text('chosen_option_id'),
+    confidence: real('confidence'),
+    parkReason: text('park_reason').$type<CouncilParkReason>(),
+    roundsUsed: integer('rounds_used').notNull().default(0),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+    deadlineAt: ts('deadline_at').notNull(),
+    createdAt: createdAt(),
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [index('council_sessions_request_idx').on(t.requestId), index('council_sessions_session_idx').on(t.sessionId)],
+);
+
+/** Append-only council transcript; the Project Room thread is a projection of it. */
+export const councilTurns = pgTable(
+  'council_turns',
+  {
+    id: text('id').primaryKey(),
+    councilId: text('council_id')
+      .notNull()
+      .references(() => councilSessions.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    round: integer('round').notNull(),
+    kind: text('kind').$type<CouncilTurnKind>().notNull(),
+    role: text('role').$type<CouncilTurnRecord['role']>().notNull(),
+    stance: text('stance').$type<CouncilTurnRecord['stance']>().notNull(),
+    body: jsonb('body').$type<Record<string, unknown>>().notNull(),
+    modelId: text('model_id'),
+    provider: text('provider'),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('council_turns_council_seq_uq').on(t.councilId, t.seq)],
 );
 
 export const memories = pgTable(

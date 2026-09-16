@@ -485,3 +485,68 @@ Format: context → decision → consequences → status.
   stages): graceful `stopping` state, session extension, per-project failure streaks, spend-rate baselines, decision
   requests, councils v2, ideas, stored digests, notifications, leases.
 * **Status:** Accepted (2026-09-15)
+
+### ADR-034 addendum — decision ladder and council protocol v2 (autopilot stages 2+3, 2026-09-16)
+* **Context:** Stage 1 parks every gated action, but a session run that meets a design question still used the stage-1
+  council (one model, self-reported confidence, no critic) or waited for a human. The owner approved that questions go to
+  decision memory, then own research, then a council with a critic on a different model, and that risky answers are
+  parked (`docs/plans/autopilot.md` §3–4). The plan lists the ladder (stage 2) and council v2 (stage 3) separately; they
+  ship together because the ladder has no judgment rung without the council.
+* **Decision:**
+  * **Scope.** In an active session, DESIGN questions climb the ladder when the composition root wires it
+    (`OrchestratorDeps.decisionLadder`). Outside sessions DESIGN is unchanged. Authority never enters the ladder: gated
+    actions stay approvals.
+  * **Ladder** (`packages/core/src/autopilot/ladder.ts`, pure `nextRung`): (a) **precedent**: deterministic
+    keyword retrieval over ADR sections parsed from the project's `docs/DECISIONS.md` (addenda joined), `docs/STATE.md` and
+    decision memory at the run's base commit, then one `precedent_check` call. A verdict counts only when the precedent
+    was retrieved, the quote is in its text and the precedent is authoritative (accepted ADR, STATE, active or confirmed
+    decision; provisional and rejected decisions never settle anything). A verified conflict with an accepted ADR
+    **always parks**. (b) **research**: `decision_research` over ranked repository excerpts (read-only, base commit);
+    citations are verified (path in the index, quote in the file). A fabricated quote discredits the answer, and only
+    factual questions can be settled here. Verified findings go to the council. (c) **council** (below). (d) **park**.
+    Every answer passes a consistency check: text proposing to supersede, replace, revise, amend, ignore or rewrite an
+    ADR parks deterministically, and a second `precedent_check` against accepted ADRs parks verified conflicts (a failed
+    check parks too). Security-relevant or high-risk questions go straight to a human (advisory only).
+  * **Council protocol v2** (`council-protocol.ts`): members by decision type (design: architect, a domain role,
+    reviewer; at most 3) plus a `critic` role. Steps, each an append-only `council_turns` row: brief → blind parallel
+    proposals → critique → deterministic evidence verification → at most one experiment (an allow-listed check named as
+    falsifier, through an `ExperimentRunner` port; skipped and recorded without a sandbox) → responses and votes → evidence
+    verification → synthesis. Prompts delimit and sanitise all repository, issue and model text; round 2 shows roles
+    without model ids or confidence.
+  * **Decision rule** (`decideCouncil`, pure and replayable over stored turns): options falsified by an executed check are
+    removed; verified product-intent or ADR-conflict objections park even when rebutted; a verified blocking objection
+    without a verified rebuttal parks; a round-2 vote change counts only when it names an active objection or verified
+    evidence the member did not produce; vote weight is 1.0 with own verified evidence, 0.5 without and 0.25 with a
+    refuted citation (self-reported confidence never weighs); near ties (< 0.1) go to the more reversible option, then the
+    smaller blast radius, then precedent support, then lower cost, else park; confidence = agreement × calibration (0.9)
+    must reach the project threshold.
+  * **Model diversity.** The router accepts `diversity.avoidProviders`/`avoidModelIds` as hard filters (fallbacks
+    included). The critic avoids the members' providers, then their models. `cross_provider` uses the normal threshold.
+    With one provider (`cross_model`) the decision is marked `singleProvider` and needs +0.10 confidence. With no model
+    diversity (`none`) or no valid critique the council parks.
+  * **Outcomes.** Only the orchestrator writes decisions: `origin` (`autopilot_precedent | autopilot_research |
+    autopilot_council | human`) and `status = provisional`. A parked question becomes a deferred `architecture_change`
+    approval with the council analysis as advisory. Approving it continues with the leading option and records a
+    human decision; rejecting blocks the run. The council never approves, never raises autonomy and never bypasses a gate,
+    and its output never calls a tool.
+  * **Review.** The digest lists decisions (origin, status, diversity, ADR refs, dissent) and questions (rungs climbed,
+    park reason, advisory, cost). Admins confirm or reject provisional decisions (`POST
+    /api/autopilot/decisions/:id/confirm|reject`, reason required, audit, one review only). Rejected decisions are never
+    reused.
+  * **Visibility.** Each council is one Project Room thread posted through the room service: the brief as root and every
+    later turn as a typed reply (`message`, `objection`, `status`, `decision`). Replies are deduplicated by turn, at most
+    14 per council and plain text. Reads: `GET /api/autopilot/decision-requests` and `/:id` (with turns), ACL-filtered.
+  * **Budgets and bounds.** Council calls are ledger entries of the session run, so they count against the session and
+    run budgets. Per decision request: cost cap (default $1.50 across all rungs). Per council: 2 rounds, 1 critique,
+    1 experiment, the project council token cap and timeout, each ending in a parked synthesis with the reason. Per
+    session: at most 10 councils and 25 % of the session budget. Identical open questions are deduplicated by
+    fingerprint.
+  * **Data:** migration `0004_autopilot_decision_ladder`: `decision_requests` (partial unique fingerprint while open or
+    resolving), `council_sessions`, `council_turns` (unique council + seq), and provenance and review columns on
+    `decisions`.
+* **Consequences:** Unattended design questions no longer stop a session, and every answer stays reviewable, provisional
+  and bounded. Deferred to later stages: `openQuestions` in plan/build/test outputs and the `question` stage outcome,
+  blocker → request, the human answer route for parked questions (a parked question is answered through its approval
+  for now), calibration from confirm/reject rates, blocking tasks that depend on a rejected decision, experiments in a
+  real sandbox, idea generation (stage 4) and hardening (stage 5).
+* **Status:** Accepted (2026-09-16)

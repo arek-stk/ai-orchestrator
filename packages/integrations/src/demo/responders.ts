@@ -271,5 +271,60 @@ export function createDemoResponders(): Record<string, MockResponder> {
       needsHuman: true,
       confidence: 0.7,
     }),
+
+    // Autopilot decision ladder and council protocol v2 (demo): no precedent applies, research leaves a judgment call,
+    // and the council agrees on the smaller option with one minor objection from the critic.
+    precedent_check_output: () => ({
+      verdict: 'not_applicable',
+      precedentRef: null,
+      quote: null,
+      answer: 'No recorded decision covers this question.',
+      rationale: 'Demo mode: the precedents do not address this design question.',
+      confidence: 0.7,
+    }),
+
+    decision_research_output: () => ({
+      answer: 'The repository does not settle this design question on its own.',
+      settled: false,
+      citations: [],
+      limitations: ['Choosing between the options is a judgment call for the council'],
+      confidence: 0.5,
+    }),
+
+    council_proposal_output: (request) => {
+      const role = /Your perspective: (\w+)/.exec(prompt(request))?.[1] ?? 'architect';
+      return {
+        options: [
+          { id: 'option-a', summary: 'Extend the existing module behind a small interface', reversibility: 'easy', blastRadius: 'small', estimatedCost: 'low' },
+          { id: 'option-b', summary: 'Introduce a new service with its own storage', reversibility: 'hard', blastRadius: 'large', estimatedCost: 'high' },
+        ],
+        recommendedOptionId: 'option-a',
+        claims: [{ optionId: 'option-a', text: `From the ${role} perspective option-a keeps the change small and reversible.`, evidence: [] }],
+        assumptions: ['Both options deliver the same user-visible behaviour'],
+        confidence: 0.82,
+      };
+    },
+
+    council_critique_output: () => ({
+      objections: [
+        {
+          id: 'obj-interface',
+          targetOptionId: 'option-a',
+          severity: 'minor',
+          kind: 'risk',
+          claim: 'The small interface may need revision if requirements grow.',
+          evidence: [],
+          falsifier: null,
+        },
+      ],
+      confidence: 0.6,
+    }),
+
+    council_vote_output: () => ({
+      responses: [{ objectionId: 'obj-interface', stance: 'accept', argument: 'Acceptable: the interface is internal and easy to change.', evidence: [] }],
+      optionId: 'option-a',
+      changedBecause: null,
+      confidence: 0.8,
+    }),
   };
 }

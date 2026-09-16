@@ -70,6 +70,8 @@ export interface RunCheckpoint {
   notes: string[];
   /** Total time the run spent PARKED waiting for a human (autopilot); excluded from the runtime stop condition. */
   parkedMs?: number;
+  /** Autopilot decision request (ladder) of this run's DESIGN question, so a resumed or re-executed step reuses it. */
+  decisionRequestId?: string | null;
   /** Final result label, e.g. pr_ready, changes_ready, plan_ready, decomposed, deployed. */
   outcome: string | null;
 }

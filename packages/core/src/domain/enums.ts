@@ -91,6 +91,8 @@ export const AGENT_ROLES = [
   'documentation',
   'devops',
   'release',
+  /** Autopilot council critic: raises evidence-backed objections and proposes nothing (docs/plans/autopilot.md §4.2). */
+  'critic',
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 

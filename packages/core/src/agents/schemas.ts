@@ -221,3 +221,102 @@ export const ReleaseReadinessOutputSchema = z.object({
   confidence: Confidence,
 });
 export type ReleaseReadinessOutput = z.infer<typeof ReleaseReadinessOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Autopilot decision ladder and council protocol v2 (docs/plans/autopilot.md §3–4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Evidence a model cites. It is data, never trusted: the orchestrator verifies every item deterministically (the path
+ * exists in the index, the quote is in the file/ADR/decision, the ADR is accepted, the check was executed) and drops
+ * or refutes what does not verify.
+ */
+export const EVIDENCE_TYPES = ['file', 'adr', 'decision', 'state', 'check'] as const;
+export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
+
+export const EvidenceItemSchema = z.object({
+  type: z.enum(EVIDENCE_TYPES),
+  /** file: repository path · adr: "ADR-034" · decision: decision id · state: "docs/STATE.md" · check: check name. */
+  ref: z.string().min(1).max(300),
+  /** Verbatim excerpt; required for file, adr, decision and state evidence. */
+  quote: z.string().max(600).nullable(),
+});
+export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
+
+export const OptionIdSchema = z.string().regex(/^[a-z0-9-]{1,40}$/);
+
+export const PrecedentCheckOutputSchema = z.object({
+  verdict: z.enum(['applies', 'conflicts', 'not_applicable']),
+  /** Reference of the precedent as listed in the input, e.g. "adr:ADR-034". */
+  precedentRef: z.string().max(120).nullable(),
+  /** Verbatim quote from that precedent supporting the verdict. */
+  quote: z.string().max(600).nullable(),
+  /** The answer the precedent implies (applies) or the conflicting rule (conflicts). */
+  answer: Text(2000),
+  rationale: Text(2000),
+  confidence: Confidence,
+});
+export type PrecedentCheckOutput = z.infer<typeof PrecedentCheckOutputSchema>;
+
+export const DecisionResearchOutputSchema = z.object({
+  answer: Text(3000),
+  /** The provided repository excerpts answer the question; false when judgment or missing information remains. */
+  settled: z.boolean(),
+  citations: z.array(z.object({ path: z.string().min(1).max(500), quote: z.string().max(600), supports: Text(500) })).max(8),
+  limitations: List(8, 500),
+  confidence: Confidence,
+});
+export type DecisionResearchOutput = z.infer<typeof DecisionResearchOutputSchema>;
+
+export const CouncilOptionSchema = z.object({
+  id: OptionIdSchema,
+  summary: Text(1000),
+  reversibility: z.enum(['easy', 'moderate', 'hard']),
+  blastRadius: z.enum(['small', 'medium', 'large']),
+  estimatedCost: z.enum(['low', 'medium', 'high']),
+});
+export type CouncilOption = z.infer<typeof CouncilOptionSchema>;
+
+export const CouncilProposalSchema = z.object({
+  options: z.array(CouncilOptionSchema).min(1).max(4),
+  recommendedOptionId: z.string().max(40),
+  claims: z.array(z.object({ optionId: z.string().max(40).nullable(), text: Text(1000), evidence: z.array(EvidenceItemSchema).max(4) })).max(6),
+  assumptions: List(6, 500),
+  confidence: Confidence,
+});
+export type CouncilProposal = z.infer<typeof CouncilProposalSchema>;
+
+export const OBJECTION_SEVERITIES = ['blocking', 'major', 'minor'] as const;
+export const OBJECTION_KINDS = ['risk', 'incorrect_claim', 'adr_conflict', 'product_intent', 'security', 'other'] as const;
+
+export const CouncilCritiqueSchema = z.object({
+  objections: z
+    .array(
+      z.object({
+        id: z.string().regex(/^obj-[a-z0-9-]{1,30}$/),
+        targetOptionId: z.string().max(40),
+        severity: z.enum(OBJECTION_SEVERITIES),
+        kind: z.enum(OBJECTION_KINDS),
+        claim: Text(1000),
+        evidence: z.array(EvidenceItemSchema).max(4),
+        /** Name of an allow-listed project check that would falsify the objection (test, lint, typecheck, build). */
+        falsifier: z.string().max(40).nullable(),
+      }),
+    )
+    .max(6),
+  confidence: Confidence,
+});
+export type CouncilCritique = z.infer<typeof CouncilCritiqueSchema>;
+export type CouncilObjection = CouncilCritique['objections'][number];
+
+export const CouncilVoteSchema = z.object({
+  responses: z
+    .array(z.object({ objectionId: z.string().max(40), stance: z.enum(['accept', 'rebut']), argument: Text(800), evidence: z.array(EvidenceItemSchema).max(4) }))
+    .max(6),
+  /** An option id, or "park" when the question should go to a human. */
+  optionId: z.string().max(40),
+  /** Objection or evidence id that changed the member's mind since round 1; null when unchanged. */
+  changedBecause: z.string().max(80).nullable(),
+  confidence: Confidence,
+});
+export type CouncilVote = z.infer<typeof CouncilVoteSchema>;

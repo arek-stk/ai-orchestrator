@@ -1,4 +1,4 @@
-import { and, desc, asc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, asc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   ConcurrentModificationError,
   emptyCheckpoint,
@@ -12,6 +12,8 @@ import {
   type ApprovalStatus,
   type Decision,
   type DecisionRepository,
+  type DecisionReview,
+  type DecisionStatus,
   type EmitEvent,
   type EventType,
   type MemoryItem,
@@ -377,10 +379,15 @@ export class DrizzleDecisionRepository implements DecisionRepository {
     return row ? toDecision(row) : null;
   }
 
-  async list(filter: { projectId?: string; taskId?: string; limit?: number }): Promise<Decision[]> {
+  async list(filter: { projectId?: string; taskId?: string; sessionId?: string; statuses?: readonly DecisionStatus[]; limit?: number }): Promise<Decision[]> {
     const conditions: SQL[] = [];
     if (filter.projectId) conditions.push(eq(t.decisions.projectId, filter.projectId));
     if (filter.taskId) conditions.push(eq(t.decisions.taskId, filter.taskId));
+    if (filter.sessionId) conditions.push(eq(t.decisions.sessionId, filter.sessionId));
+    if (filter.statuses) {
+      if (filter.statuses.length === 0) return [];
+      conditions.push(inArray(t.decisions.status, [...filter.statuses]));
+    }
     const rows = await this.db
       .select()
       .from(t.decisions)
@@ -394,9 +401,19 @@ export class DrizzleDecisionRepository implements DecisionRepository {
     const [row] = await this.db
       .select()
       .from(t.decisions)
-      .where(and(eq(t.decisions.projectId, projectId), eq(t.decisions.questionKey, questionKey)))
+      .where(and(eq(t.decisions.projectId, projectId), eq(t.decisions.questionKey, questionKey), ne(t.decisions.status, 'rejected')))
       .orderBy(desc(t.decisions.createdAt))
       .limit(1);
+    return row ? toDecision(row) : null;
+  }
+
+  async review(id: string, review: DecisionReview): Promise<Decision | null> {
+    // Conditional update: only a provisional decision can be reviewed, exactly once.
+    const [row] = await this.db
+      .update(t.decisions)
+      .set({ status: review.status, reviewedBy: review.reviewedBy, reviewedAt: review.at, reviewComment: review.comment })
+      .where(and(eq(t.decisions.id, id), eq(t.decisions.status, 'provisional')))
+      .returning();
     return row ? toDecision(row) : null;
   }
 }

@@ -18,6 +18,7 @@ import {
   Minus,
   Monitor,
   Rocket,
+  Scale,
   ScanSearch,
   Search,
   Server,
@@ -100,6 +101,7 @@ export const ROLE_ICON: Record<AgentRole, LucideIcon> = {
   documentation: BookOpen,
   devops: Cloud,
   release: Rocket,
+  critic: Scale,
 };
 
 export function RoleLabel({ role }: { role: AgentRole }) {

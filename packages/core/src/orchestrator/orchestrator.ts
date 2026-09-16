@@ -4,6 +4,7 @@ import { approvalGrant } from '../approval/dependencies';
 import type { AutopilotAuditEntry, AutopilotSessionRepository } from '../autopilot/service';
 import { applyAutopilotSession, DEFAULT_AUTOPILOT_LIMITS, sessionTaskEligibility, type AutopilotLimits, type AutopilotSession } from '../autopilot/session';
 import type { FileSummaryStore } from '../context/file-summarizer';
+import type { DecisionLadderWiring } from './design-ladder';
 import {
   NON_TERMINAL_RUN_STATUSES,
   SLOT_HOLDING_RUN_STATUSES,
@@ -112,6 +113,11 @@ export interface OrchestratorDeps {
   globalBudgetExhausted?: () => Promise<boolean>;
   /** Autopilot sessions (away mode). Absent: the pipeline behaves as without sessions. */
   autopilotSessions?: AutopilotSessionRepository;
+  /**
+   * Decision ladder and council protocol v2 for questions of session runs (autopilot stage 2). Absent: DESIGN in a
+   * session uses the stage-1 behaviour (bounded council, approval below the threshold).
+   */
+  decisionLadder?: DecisionLadderWiring;
   /** Audit trail for autopilot run transitions (started in a session, parked, unparked, paused by a kill). */
   audit?: (entry: AutopilotAuditEntry) => Promise<void>;
   options?: Partial<OrchestratorOptions>;

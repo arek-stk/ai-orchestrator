@@ -24,7 +24,7 @@ export const RUN_STATUSES = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED', 'PARKED',
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export const AGENT_ROLES = [
-  'orchestrator', 'project_analyst', 'planner', 'architect', 'builder', 'frontend', 'backend', 'database', 'security', 'tester', 'debugger', 'reviewer', 'researcher', 'documentation', 'devops', 'release',
+  'orchestrator', 'project_analyst', 'planner', 'architect', 'builder', 'frontend', 'backend', 'database', 'security', 'tester', 'debugger', 'reviewer', 'researcher', 'documentation', 'devops', 'release', 'critic',
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
@@ -496,13 +496,63 @@ export interface AutopilotDigest {
   demo: boolean;
   window: { startsAt: ISODate; endsAt: ISODate; endedAt: ISODate | null };
   stop: { reason: string | null; detail: string | null; by: string | null };
-  totals: DigestRunCounts & { pullRequests: number; decisions: number };
+  totals: DigestRunCounts & { pullRequests: number; decisions: number; decisionsToReview: number; questionsParked: number };
   projects: Array<DigestRunCounts & { projectId: string }>;
   pullRequests: Array<{ runId: string; taskId: string; projectId: string; taskTitle: string; number: number; url: string | null; outcome: string | null }>;
   parkedApprovals: Array<{ approvalId: string; projectId: string; runId: string | null; taskId: string | null; taskTitle: string | null; action: string; reason: string; status: ApprovalStatus; expiresAt: ISODate | null; decidedBy: string | null }>;
   failures: Array<{ runId: string; taskId: string; projectId: string; taskTitle: string; status: RunStatus; reason: string }>;
-  decisions: Array<{ decisionId: string; projectId: string; taskId: string | null; question: string; decision: string; confidence: number; createdAt: ISODate }>;
-  costs: { totalUsd: number; budgetUsd: number; budgetUsedPct: number; byProject: Array<{ projectId: string; costUsd: number }> };
+  decisions: DigestDecision[];
+  questions: DigestQuestion[];
+  costs: { totalUsd: number; budgetUsd: number; budgetUsedPct: number; decisionsUsd: number; byProject: Array<{ projectId: string; costUsd: number }> };
+}
+
+/** Decision ladder and council protocol v2 (autopilot stage 2+3). */
+export type DecisionOrigin = 'pipeline' | 'autopilot_precedent' | 'autopilot_research' | 'autopilot_council' | 'human';
+export type DecisionReviewStatus = 'active' | 'provisional' | 'confirmed' | 'rejected';
+export type CouncilDiversity = 'cross_provider' | 'cross_model' | 'none';
+export type LadderRung = 'memory' | 'research' | 'council' | 'human';
+export type DecisionRequestStatus = 'open' | 'resolving' | 'answered' | 'parked' | 'answered_by_human' | 'withdrawn';
+
+export interface DigestDecision {
+  decisionId: string;
+  projectId: string;
+  taskId: string | null;
+  runId: string | null;
+  question: string;
+  decision: string;
+  reason: string;
+  confidence: number;
+  origin: DecisionOrigin;
+  status: DecisionReviewStatus;
+  requestId: string | null;
+  councilId: string | null;
+  adrRefs: string[];
+  diversity: CouncilDiversity | null;
+  singleProvider: boolean;
+  dissent: string[];
+  reviewedBy: string | null;
+  reviewComment: string | null;
+  createdAt: ISODate;
+}
+
+export interface DigestQuestion {
+  requestId: string;
+  projectId: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  runId: string | null;
+  kind: string;
+  question: string;
+  status: DecisionRequestStatus;
+  rung: LadderRung | null;
+  trail: Array<{ rung: LadderRung; outcome: string; detail: string }>;
+  parkReason: string | null;
+  advisory: { leadingOptionId: string | null; summary: string } | null;
+  decisionId: string | null;
+  approvalId: string | null;
+  councilId: string | null;
+  costUsd: number;
+  createdAt: ISODate;
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +576,8 @@ export const EVENT_TYPES = [
   'room.message',
   'autopilot.session.started', 'autopilot.session.resumed', 'autopilot.session.stopped', 'autopilot.session.killed',
   'autopilot.run.started', 'autopilot.run.parked', 'autopilot.run.unparked',
+  'decision_request.created', 'decision_request.resolved', 'decision_request.parked',
+  'council.started', 'council.finished', 'decision.reviewed',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

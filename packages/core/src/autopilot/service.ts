@@ -1,7 +1,8 @@
 import type { BudgetScope } from '../budget/budget-guard';
 import type { RunStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
-import type { Clock, EventRecorder, ProjectRepository, RunRepository } from '../ports';
+import type { Decision } from '../domain/records';
+import type { Clock, DecisionRepository, EventRecorder, ProjectRepository, RunRepository } from '../ports';
 import { buildAutopilotDigest, type AutopilotDigest, type AutopilotDigestInput } from './digest';
 import {
   defaultStopPolicy,
@@ -89,7 +90,11 @@ export interface AutopilotServiceDeps {
   pauseRun: (runId: string, reason: string) => Promise<boolean>;
   audit?: (entry: AutopilotAuditEntry) => Promise<void>;
   demoMode?: () => boolean;
+  /** Decision memory, for confirming or rejecting provisional autopilot decisions. */
+  decisions?: Pick<DecisionRepository, 'get' | 'review'>;
 }
+
+export type DecisionReviewResult = { ok: true; decision: Decision } | { ok: false; status: 404 | 409; error: string };
 
 /**
  * The `session` budget scope for a model call of a run in an active session (existing budget guard, ADR-004 style
@@ -254,6 +259,36 @@ export class AutopilotService {
     }
     const verdicts = await this.tick();
     return { resumed, stopped: stopped + verdicts.stopped + verdicts.killed };
+  }
+
+  /**
+   * A human confirms or rejects a provisional decision the autopilot settled (return digest). Only provisional
+   * decisions can be reviewed, exactly once. A rejected decision is never reused by decision memory or the ladder.
+   * Authorization (admin, per-project ACL) is the caller's job.
+   */
+  async reviewDecision(decisionId: string, verdict: 'confirmed' | 'rejected', actor: AutopilotActor, comment: string | null): Promise<DecisionReviewResult> {
+    const decisions = this.deps.decisions;
+    if (!decisions) return { ok: false, status: 404, error: 'decision memory is not available' };
+    const existing = await decisions.get(decisionId);
+    if (!existing) return { ok: false, status: 404, error: 'decision not found' };
+    if (existing.status !== 'provisional') return { ok: false, status: 409, error: `decision is ${existing.status}, not provisional` };
+    const reviewed = await decisions.review(decisionId, { status: verdict, reviewedBy: actor.login, comment, at: this.deps.clock.now() });
+    if (!reviewed) return { ok: false, status: 409, error: 'decision was reviewed concurrently' };
+    await this.deps.events.emit({
+      type: 'decision.reviewed',
+      projectId: reviewed.projectId,
+      taskId: reviewed.taskId,
+      runId: reviewed.runId,
+      payload: { decisionId, status: verdict, by: actor.login, sessionId: reviewed.sessionId },
+    });
+    await this.audit(actor, verdict === 'confirmed' ? 'autopilot.decision.confirm' : 'autopilot.decision.reject', decisionId, {
+      projectId: reviewed.projectId,
+      sessionId: reviewed.sessionId,
+      origin: reviewed.origin,
+      // The comment is human text; the audit keeps only whether one was given.
+      withComment: comment !== null,
+    });
+    return { ok: true, decision: reviewed };
   }
 
   async digest(id: string): Promise<AutopilotDigest | null> {
