@@ -202,6 +202,14 @@ root wraps the event recorder with `withRoomProjection`, so allow-listed orchest
 per-run capped room notices. API: `apps/server/src/routes-room.ts`; live updates are content-free `room.message` events
 on the SSE stream.
 
+### 4.15a Board, milestones and leases (ADR-030 addendum 2)
+Kanban board, milestones and roadmap are views over tasks. `packages/core/src/board` holds the pure rules (`board.ts`: column
+mapping, move plans, ordering, WIP; `milestones.ts`; `leases.ts`: glob overlap, conflicts, expiry) and the use cases
+(`BoardService`, `LeaseService`). `tasks.scheduling_hold` keeps cards from being scheduled until a person releases them; the
+scheduler also skips tasks owned by people and tasks with a foreign task lease, and IMPLEMENT/COMMIT wait on overlapping path
+leases. Persistence: `packages/db/src/board-repositories.ts`; API: `apps/server/src/routes-board.ts`; web: Board and Roadmap
+project tabs (`project-board.tsx`, `project-roadmap.tsx`, pure helpers in `lib/board.ts`).
+
 ### 4.16 AI Hub (web)
 `/hub` lets users discover AI tools and connect the ones the orchestrator can use. The UI (`apps/web/src/components/hub`)
 consumes only the `HubService` interface (`apps/web/src/lib/hub/service.ts`); pure search/category/filter/sort logic lives
