@@ -49,6 +49,8 @@ export const DEFAULT_TOOL_PERMISSIONS: Readonly<Record<AgentRole, readonly ToolN
   documentation: [...READ, 'docs.write'],
   devops: [...READ, 'ci.status', 'ci.rerun', 'build.run'],
   release: ['repository.read', 'ci.status', 'github.pr.read', 'deploy.run'],
+  // The council critic only reads; its output is data for the orchestrator, never a tool call.
+  critic: READ,
 });
 
 export type ToolDenialReason = 'unknown_tool' | 'permission' | 'autonomy' | 'invalid_input' | 'security' | 'approval_required' | 'budget';

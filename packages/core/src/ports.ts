@@ -9,6 +9,8 @@ import type {
   Approval,
   ApprovalStatus,
   Decision,
+  DecisionProvenance,
+  DecisionStatus,
   MemoryItem,
   MemoryScope,
   UsageEntry,
@@ -117,14 +119,24 @@ export interface AgentRunRepository {
   list(filter: AgentRunFilter): Promise<AgentRun[]>;
 }
 
-export type NewDecision = Omit<Decision, 'id' | 'createdAt'>;
+export type NewDecision = Omit<Decision, 'id' | 'createdAt' | keyof DecisionProvenance> &
+  Partial<Omit<DecisionProvenance, 'reviewedBy' | 'reviewedAt' | 'reviewComment'>>;
+
+export interface DecisionReview {
+  status: 'confirmed' | 'rejected';
+  reviewedBy: string;
+  comment: string | null;
+  at: Date;
+}
 
 export interface DecisionRepository {
   create(decision: NewDecision): Promise<Decision>;
   get(id: string): Promise<Decision | null>;
-  list(filter: { projectId?: string; taskId?: string; limit?: number }): Promise<Decision[]>;
-  /** Most recent decision for an equivalent question in the project (for reuse, spec §29). */
+  list(filter: { projectId?: string; taskId?: string; sessionId?: string; statuses?: readonly DecisionStatus[]; limit?: number }): Promise<Decision[]>;
+  /** Most recent reusable decision for an equivalent question in the project (spec §29). Rejected decisions never count. */
   findByQuestionKey(projectId: string, questionKey: string): Promise<Decision | null>;
+  /** Confirms or rejects a provisional decision; null when it is not (or no longer) provisional. */
+  review(id: string, review: DecisionReview): Promise<Decision | null>;
 }
 
 export type NewMemory = Pick<MemoryItem, 'projectId' | 'scope' | 'kind' | 'key' | 'content'> &

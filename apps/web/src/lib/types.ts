@@ -24,7 +24,7 @@ export const RUN_STATUSES = ['QUEUED', 'RUNNING', 'WAITING', 'PAUSED', 'PARKED',
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export const AGENT_ROLES = [
-  'orchestrator', 'project_analyst', 'planner', 'architect', 'builder', 'frontend', 'backend', 'database', 'security', 'tester', 'debugger', 'reviewer', 'researcher', 'documentation', 'devops', 'release',
+  'orchestrator', 'project_analyst', 'planner', 'architect', 'builder', 'frontend', 'backend', 'database', 'security', 'tester', 'debugger', 'reviewer', 'researcher', 'documentation', 'devops', 'release', 'critic',
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 

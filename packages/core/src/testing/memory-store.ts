@@ -8,7 +8,7 @@ import type { FileSummaryStore } from '../context/file-summarizer';
 import type { HealthScan, HealthScanRepository, ImprovementProposal, ProposalRepository } from '../intelligence/types';
 import { TERMINAL_RUN_STATUSES, type RunStatus, type TaskStatus } from '../domain/enums';
 import type { Project } from '../domain/project';
-import type { AgentRun, Approval, Decision, MemoryItem, UsageEntry } from '../domain/records';
+import { DEFAULT_DECISION_PROVENANCE, type AgentRun, type Approval, type Decision, type MemoryItem, type UsageEntry } from '../domain/records';
 import { emptyCheckpoint, type PipelineRun } from '../domain/run';
 import type { Task } from '../domain/task';
 import type { AnyDomainEvent } from '../events/types';
@@ -31,6 +31,7 @@ import {
   type UsageRepository,
 } from '../ports';
 import type { RepoFileStore } from '../repo-index/indexer';
+import { createMemoryLadderStore } from './memory-ladder';
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -239,19 +240,32 @@ export function createMemoryStore(clock: Clock = systemClock) {
 
   const decisions: DecisionRepository = {
     create: async (input) => {
-      const decision: Decision = { ...clone(input), id: id('dec'), createdAt: now() };
+      const decision: Decision = { ...DEFAULT_DECISION_PROVENANCE, adrRefs: [], ...clone(input), id: id('dec'), createdAt: now() };
       decisionList.push(decision);
       return clone(decision);
     },
     get: async (decisionId) => clone(decisionList.find((d) => d.id === decisionId) ?? null),
     list: async (filter) =>
       clone(
-        decisionList
-          .filter((d) => (!filter.projectId || d.projectId === filter.projectId) && (!filter.taskId || d.taskId === filter.taskId))
+        [...decisionList]
+          .reverse()
+          .filter(
+            (d) =>
+              (!filter.projectId || d.projectId === filter.projectId) &&
+              (!filter.taskId || d.taskId === filter.taskId) &&
+              (!filter.sessionId || d.sessionId === filter.sessionId) &&
+              (!filter.statuses || filter.statuses.includes(d.status)),
+          )
           .slice(0, filter.limit ?? 100),
       ),
     findByQuestionKey: async (projectId, questionKey) =>
-      clone([...decisionList].reverse().find((d) => d.projectId === projectId && d.questionKey === questionKey) ?? null),
+      clone([...decisionList].reverse().find((d) => d.projectId === projectId && d.questionKey === questionKey && d.status !== 'rejected') ?? null),
+    review: async (decisionId, review) => {
+      const decision = decisionList.find((d) => d.id === decisionId);
+      if (!decision || decision.status !== 'provisional') return null;
+      Object.assign(decision, { status: review.status, reviewedBy: review.reviewedBy, reviewedAt: review.at, reviewComment: review.comment });
+      return clone(decision);
+    },
   };
 
   const memories: MemoryRepository = {
@@ -469,6 +483,7 @@ export function createMemoryStore(clock: Clock = systemClock) {
   const toolAuditLog: Array<ToolAuditEntry & { at: Date }> = [];
   const toolAudit = (entry: ToolAuditEntry) => void toolAuditLog.push({ ...clone(entry), at: now() });
 
+  const ladder = createMemoryLadderStore(clock);
   const sessionList: AutopilotSession[] = [];
   const activeSessionByProject = new Map<string, string>();
   const sessionRuns = (sessionId: string) => [...runMap.values()].filter((r) => r.sessionId === sessionId);
@@ -544,13 +559,14 @@ export function createMemoryStore(clock: Clock = systemClock) {
         })),
         taskTitles: new Map(runs.map((r) => [r.taskId, taskMap.get(r.taskId)?.title ?? r.taskId])),
         approvals: clone(approvalList.filter((a) => a.sessionId === session.id)),
-        decisions: clone(decisionList.filter((d) => d.runId !== null && runIds.has(d.runId))),
+        decisions: clone(decisionList.filter((d) => d.sessionId === session.id || (d.runId !== null && runIds.has(d.runId)))),
+        decisionRequests: await ladder.decisionRequests.list({ sessionId: session.id, limit: 500 }),
         costByProject: [...costByProject.entries()].map(([projectId, costUsd]) => ({ projectId, costUsd })),
       };
     },
   };
 
-  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger, agentCache, scans, proposals, fileSummaries, toolAudit, toolAuditLog, autopilotSessions };
+  return { projects, tasks, runs, agentRuns, decisions, memories, approvals, usage, events, queue, repoFiles, ledger, agentCache, scans, proposals, fileSummaries, toolAudit, toolAuditLog, autopilotSessions, decisionRequests: ladder.decisionRequests, councils: ladder.councils };
 }
 
 export type MemoryStore = ReturnType<typeof createMemoryStore>;

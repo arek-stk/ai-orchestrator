@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, like, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, like, lte, or, sql, type SQL } from 'drizzle-orm';
 import {
   AutopilotConflictError,
   TERMINAL_RUN_STATUSES,
@@ -183,9 +183,14 @@ export class DrizzleAutopilotSessionRepository implements AutopilotSessionReposi
     const runs = runRows.map(toRun);
     const runIds = runs.map((r) => r.id);
 
-    const [approvalRows, decisionRows, costRows] = await Promise.all([
+    const [approvalRows, decisionRows, requestRows, costRows] = await Promise.all([
       this.db.select().from(t.approvals).where(eq(t.approvals.sessionId, session.id)).orderBy(asc(t.approvals.requestedAt)).limit(MAX_RUNS),
-      runIds.length > 0 ? this.db.select().from(t.decisions).where(inArray(t.decisions.runId, runIds)).limit(MAX_RUNS) : Promise.resolve([]),
+      this.db
+        .select()
+        .from(t.decisions)
+        .where(runIds.length > 0 ? or(eq(t.decisions.sessionId, session.id), inArray(t.decisions.runId, runIds)) : eq(t.decisions.sessionId, session.id))
+        .limit(MAX_RUNS),
+      this.db.select().from(t.decisionRequests).where(eq(t.decisionRequests.sessionId, session.id)).orderBy(asc(t.decisionRequests.createdAt)).limit(MAX_RUNS),
       this.db
         .select({ projectId: t.pipelineRuns.projectId, costUsd: sql<number>`coalesce(sum(${t.usageLedger.costUsd}), 0)` })
         .from(t.usageLedger)
@@ -217,6 +222,7 @@ export class DrizzleAutopilotSessionRepository implements AutopilotSessionReposi
       taskTitles: new Map(titles.map((row) => [row.id, row.title])),
       approvals,
       decisions: decisionRows.map(toDecision),
+      decisionRequests: requestRows.map((row) => ({ ...row })),
       costByProject: costRows.map((row) => ({ projectId: row.projectId, costUsd: Number(row.costUsd) })),
     };
   }

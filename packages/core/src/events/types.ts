@@ -52,6 +52,13 @@ export interface EventPayloads {
   'autopilot.run.started': { sessionId: string; effectiveAutonomy: number; baseAutonomy: number };
   'autopilot.run.parked': { sessionId: string; approvalId: string; action: string; reason: string; expiresAt: string | null };
   'autopilot.run.unparked': { sessionId: string | null; approvalId: string; status: 'approved' | 'rejected' | 'expired' };
+  // Decision ladder and council protocol v2 (autopilot stage 2). Payloads carry ids and bounded labels only.
+  'decision_request.created': { requestId: string; sessionId: string | null; kind: string; question: string };
+  'decision_request.resolved': { requestId: string; sessionId: string | null; rung: string; decisionId: string };
+  'decision_request.parked': { requestId: string; sessionId: string | null; rung: string; reason: string; approvalId: string | null };
+  'council.started': { councilId: string; requestId: string; decisionType: string; members: string[] };
+  'council.finished': { councilId: string; requestId: string; outcome: 'decided' | 'parked'; diversity: string; confidence: number; parkReason: string | null };
+  'decision.reviewed': { decisionId: string; status: 'confirmed' | 'rejected'; by: string; sessionId: string | null };
 }
 
 export type EventType = keyof EventPayloads;

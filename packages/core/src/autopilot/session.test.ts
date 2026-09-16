@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defaultProjectSettings, GATED_ACTIONS, HARD_GATED_ACTIONS } from '../domain/project';
-import type { Approval, Decision } from '../domain/records';
+import { DEFAULT_DECISION_PROVENANCE, type Approval, type Decision } from '../domain/records';
 import { buildAutopilotDigest, filterAutopilotDigest, type AutopilotDigestInput } from './digest';
 import {
   applyAutopilotSession,
@@ -210,6 +210,7 @@ describe('return digest', () => {
       expiresAt: new Date(T0.getTime() + 58 * HOUR),
     });
     const decision: Decision = {
+      ...DEFAULT_DECISION_PROVENANCE,
       id: 'dec_1',
       projectId: 'prj_a',
       taskId: 'tsk_1',
@@ -250,6 +251,7 @@ describe('return digest', () => {
       ]),
       approvals: [approval('x', 'prj_a', 40), approval('y', 'prj_b', 40)],
       decisions: [decision, { ...decision, id: 'dec_other', runId: 'run_not_in_session' }],
+      decisionRequests: [],
       costByProject: [
         { projectId: 'prj_b', costUsd: 1.25 },
         { projectId: 'prj_a', costUsd: 3.5 },
@@ -260,7 +262,7 @@ describe('return digest', () => {
   it('aggregates runs, PRs, parked approvals, decisions, costs and the stop reason', () => {
     const digest = buildAutopilotDigest(digestInput(), new Date(T0.getTime() + 9 * HOUR));
     expect(digest.asOf).toBe(new Date(T0.getTime() + 5 * HOUR).toISOString());
-    expect(digest.totals).toEqual({ runsStarted: 4, succeeded: 1, failed: 1, cancelled: 0, inProgress: 0, parked: 2, pullRequests: 1, decisions: 1 });
+    expect(digest.totals).toEqual({ runsStarted: 4, succeeded: 1, failed: 1, cancelled: 0, inProgress: 0, parked: 2, pullRequests: 1, decisions: 1, decisionsToReview: 0, questionsParked: 0 });
     expect(digest.pullRequests).toEqual([{ runId: 'run_1', taskId: 'tsk_1', projectId: 'prj_a', taskTitle: 'Add product search', number: 7, url: 'https://github.com/acme/shop/pull/7', outcome: 'pr_ready' }]);
     expect(digest.parkedApprovals.map((a) => [a.approvalId, a.action, a.taskTitle])).toEqual([
       ['x', 'database_migration', 'Add search index'],
@@ -268,7 +270,7 @@ describe('return digest', () => {
     ]);
     expect(digest.failures).toEqual([expect.objectContaining({ runId: 'run_2', reason: 'Gave up after 3 repair attempts' })]);
     expect(digest.decisions.map((d) => d.decisionId)).toEqual(['dec_1']);
-    expect(digest.costs).toEqual({ totalUsd: 4.75, budgetUsd: 5, budgetUsedPct: 95, byProject: [{ projectId: 'prj_a', costUsd: 3.5 }, { projectId: 'prj_b', costUsd: 1.25 }] });
+    expect(digest.costs).toEqual({ totalUsd: 4.75, budgetUsd: 5, budgetUsedPct: 95, decisionsUsd: 0, byProject: [{ projectId: 'prj_a', costUsd: 3.5 }, { projectId: 'prj_b', costUsd: 1.25 }] });
     expect(digest.stop).toEqual({ reason: 'budget_exhausted', detail: 'spent $5.00 of $5.00', by: 'system' });
   });
 
@@ -294,11 +296,11 @@ describe('return digest', () => {
 
     // Session budget $5, prj_a $3.50, prj_b $1.25: shares are computed from visible spend only.
     expect(full.costs).toMatchObject({ totalUsd: 4.75, budgetUsedPct: 95 });
-    expect(visibleOnly.costs).toEqual({ totalUsd: 3.5, budgetUsd: 5, budgetUsedPct: 70, byProject: [{ projectId: 'prj_a', costUsd: 3.5 }] });
-    expect(hiddenOnly.costs).toEqual({ totalUsd: 1.25, budgetUsd: 5, budgetUsedPct: 25, byProject: [{ projectId: 'prj_b', costUsd: 1.25 }] });
+    expect(visibleOnly.costs).toEqual({ totalUsd: 3.5, budgetUsd: 5, budgetUsedPct: 70, decisionsUsd: 0, byProject: [{ projectId: 'prj_a', costUsd: 3.5 }] });
+    expect(hiddenOnly.costs).toEqual({ totalUsd: 1.25, budgetUsd: 5, budgetUsedPct: 25, decisionsUsd: 0, byProject: [{ projectId: 'prj_b', costUsd: 1.25 }] });
     // The stop detail aggregates the whole session ("spent $5.00 of $5.00"); partial views omit it.
     expect(visibleOnly.stop).toEqual({ reason: 'budget_exhausted', detail: null, by: 'system' });
-    expect(visibleOnly.totals).toEqual({ runsStarted: 2, succeeded: 1, failed: 0, cancelled: 0, inProgress: 0, parked: 1, pullRequests: 1, decisions: 1 });
+    expect(visibleOnly.totals).toEqual({ runsStarted: 2, succeeded: 1, failed: 0, cancelled: 0, inProgress: 0, parked: 1, pullRequests: 1, decisions: 1, decisionsToReview: 0, questionsParked: 0 });
 
     // No field of the filtered digest mentions the hidden project or its records.
     const serialized = JSON.stringify(visibleOnly);

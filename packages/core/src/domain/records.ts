@@ -59,8 +59,49 @@ export interface ConsultedAgent {
   confidence: number;
 }
 
+/**
+ * Who settled a decision. `pipeline`: the DESIGN council outside sessions. `autopilot_*`: the decision ladder of an
+ * autopilot session (precedent, research or council v2). `human`: a person answered a parked question.
+ */
+export const DECISION_ORIGINS = ['pipeline', 'autopilot_precedent', 'autopilot_research', 'autopilot_council', 'human'] as const;
+export type DecisionOrigin = (typeof DECISION_ORIGINS)[number];
+
+/**
+ * `active`: a normal decision. `provisional`: settled by the autopilot while nobody was watching; a human confirms or
+ * rejects it in the return digest. Rejected decisions are never reused.
+ */
+export const DECISION_STATUSES = ['active', 'provisional', 'confirmed', 'rejected'] as const;
+export type DecisionStatus = (typeof DECISION_STATUSES)[number];
+
+/** Provenance of a decision; defaults apply to pipeline decisions created outside autopilot sessions. */
+export interface DecisionProvenance {
+  origin: DecisionOrigin;
+  status: DecisionStatus;
+  sessionId: string | null;
+  /** Decision request (ladder) that produced it. */
+  requestId: string | null;
+  councilId: string | null;
+  /** Accepted ADRs the rationale relies on, e.g. "ADR-034". */
+  adrRefs: string[];
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+  reviewComment: string | null;
+}
+
+export const DEFAULT_DECISION_PROVENANCE: Readonly<DecisionProvenance> = Object.freeze({
+  origin: 'pipeline',
+  status: 'active',
+  sessionId: null,
+  requestId: null,
+  councilId: null,
+  adrRefs: [],
+  reviewedBy: null,
+  reviewedAt: null,
+  reviewComment: null,
+});
+
 /** Decision Memory entry (spec §10, §22). Only the orchestrator writes these. */
-export interface Decision {
+export interface Decision extends DecisionProvenance {
   id: string;
   projectId: string;
   taskId: string | null;

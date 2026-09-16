@@ -30,6 +30,7 @@ import { ToolDeniedError, type ToolContext, type ToolRouter, type ToolWorkspace 
 import { childTaskKind, isPlanned, mergeChanges, questionKey, renderChangeset, truncate } from './helpers';
 import type { OrchestratorDeps, OrchestratorOptions } from './orchestrator';
 import { failureFingerprint } from '../memory/fingerprint';
+import { designInSession } from './design-ladder';
 
 export type StageOutcome =
   | { kind: 'passed'; summary: string }
@@ -242,7 +243,7 @@ async function applyChanges(
   return null;
 }
 
-async function loadIndex(ctx: StageContext): Promise<IndexedFile[]> {
+export async function loadIndex(ctx: StageContext): Promise<IndexedFile[]> {
   const stored = await ctx.deps.repoFiles.list(ctx.project.id);
   if (stored.length > 0 || !ctx.project.repo) return stored;
   const result = await ctx.deps.repoIndex.refresh(ctx.project.id, ctx.project.repo, ctx.project.repo.defaultBranch);
@@ -437,10 +438,14 @@ export const designStage: StageHandler = async (ctx) => {
     return passed(`Reused earlier decision ${reusable.id} (${Math.round(reusable.confidence * 100)}% confidence, no model call).`);
   }
 
-  const members = councilMembers(task, plan);
   const sections: AgentInput['sections'] = plan
     ? [{ title: 'Plan', body: JSON.stringify({ approach: plan.approach, tasks: plan.tasks.map((t) => ({ key: t.key, title: t.title, role: t.role })), risks: plan.risks }, null, 2) }]
     : [];
+  // Autopilot stage 2+3: in an active session the question climbs the decision ladder (precedent → research → council
+  // protocol v2 → park) and settles only provisional decisions.
+  if (ctx.session && deps.decisionLadder) return designInSession(ctx, { question, approach, plan, sections });
+
+  const members = councilMembers(task, plan);
 
   const result = await runCouncil(
     {
