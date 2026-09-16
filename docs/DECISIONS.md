@@ -312,6 +312,51 @@ Format: context → decision → consequences → status.
   message table. With several worker processes the per-run cap applies per process.
 * **Status:** Accepted (2026-09-15)
 
+### ADR-030 addendum 2 — board, holds, milestones and leases (stage 2, 2026-09-16)
+* **Context:** The owner wants Kanban and project planning on top of the room. The scheduler picks every `BACKLOG` and
+  `READY` task, and `POST /api/projects/:id/tasks` creates `READY` tasks, so a board that only maps columns to statuses would
+  start expensive runs whenever a card is dragged. The planning assistant plan (F1) already proposed `tasks.scheduling_hold`
+  for the same reason, and the autopilot checks it (ADR-034).
+* **Decision:**
+  * **Hold instead of status semantics.** `tasks.scheduling_hold` + `hold_reason` (built here, shared with the planning
+    assistant and honoured by the autopilot): the scheduler never selects held tasks. Moving a card to Backlog holds it;
+    Backlog ↔ Ready keeps the hold state; a blocked, failed or cancelled card moved to Ready arrives on hold; cards added on
+    the board and tasks handed to the orchestrator start on hold. Only an explicit release (`release: true` on a move to
+    Ready, or `POST …/release`, confirmed in the UI together with the task's cost cap) clears it. An explicit
+    `POST /api/tasks/:id/start` is intent to run and clears the hold. API-created tasks and auto-accepted improvements stay
+    unheld, so their behaviour does not change.
+  * **Columns are derived from status:** Backlog, Ready, In progress (`RUNNING`, `WAITING_CHILDREN`, `PAUSED`), Review
+    (`WAITING_APPROVAL`, or a running orchestrator task with an open PR), Blocked (`BLOCKED`, `FAILED`), Done, Cancelled.
+    For orchestrator tasks people move only between Backlog, Ready and Cancelled (cancelling an active card cancels its run);
+    the pipeline owns the other columns. Tasks assigned to a person are never started by the orchestrator (scheduler and
+    `startTask`); their assignee or an admin moves them through every column, which sets `RUNNING`, `WAITING_APPROVAL` or
+    `DONE` without a pipeline run. Assignees are owners, admins and project members with an effective operator role; external
+    AI assignees wait for AI identities (stage 3). Reassigning a task with an active run is refused.
+  * **Ordering:** `board_position` (double) with midpoint insertion; a column is renumbered when positions are missing or the
+    gap is exhausted. **WIP:** In progress shows its count against the project's `maxConcurrentTasks`; it is an indication,
+    not a hard limit (the scheduler enforces concurrency for orchestrator runs).
+  * **Milestones** (`milestones`: title, description, `planned | active | done`, start and due date, position) group tasks via
+    `tasks.milestone_id` (set null on delete); progress is derived (by points when every task is estimated, else by count).
+    The roadmap is a timeline view of dated milestones; the roadmap planning agent stays in stage 3.
+  * **Leases** (`leases`: holder, `task | paths` scope, normalised globs, reason, expiry, end reason): acquisition checks
+    conflicts in a transaction that locks the project row; default 30 min, 5 min – 8 h, heartbeats never extend beyond 8 h
+    from creation; at most 200 active leases per project. Globs support `*` and `**` only and are matched without regular
+    expressions (bounded dynamic programming). The scheduler skips tasks with a foreign task lease; IMPLEMENT and COMMIT
+    wait (resume at the earliest expiry, at most `waitRetryMs` later) while a person's path lease overlaps the change set,
+    bounded by the run's stop conditions. Holders release, admins break (audited `lease.break`), the scheduler tick reaps
+    expired leases exactly once. Orchestrator-held leases come with autopilot stage 5.
+  * **API and events:** `apps/server/src/routes-board.ts` (ADR-016): viewers read, project operators mutate; audit entries
+    without free text; per-user rate limits (board 120/min, leases 60/min). Events `task.moved`, `task.assigned`,
+    `task.hold_changed`, `task.planning_updated`, `milestone.updated` and `lease.acquired|released|expired` go through the
+    room-projecting recorder: column changes, assignments, holds, milestone create/delete/status changes and lease changes
+    become system notices (intents `status`, `handoff`, `claim`, `release`) with dedupe keys (card changes per minute
+    bucket, lease and milestone changes per id); reorders and field edits are SSE-only.
+* **Consequences:** Migration `0004_project_board`. Dragging cannot start work; the cost is one extra, confirmed click
+  (release) for new planned work. Tasks owned by people reuse pipeline statuses without runs, so dashboards count them as
+  running. The pipeline checks path leases against its change set, which exists only after the build agent ran (the plan's
+  check on plan areas before IMPLEMENT is not built).
+* **Status:** Accepted (2026-09-16)
+
 ## ADR-013 — Project Health Scan: deterministic score, ROI-ranked proposals, guarded auto-acceptance
 * **Context:** Spec §14 asks for autonomous product improvement without "unrequested large changes". Model output is
   not reproducible, and an improvement loop must not flood projects with work or spend unbounded budget.

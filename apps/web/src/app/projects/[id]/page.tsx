@@ -5,7 +5,9 @@ import { useParams, usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ProjectStatusBadge } from '@/components/domain';
 import { useBreadcrumb } from '@/components/shell';
+import { BoardTab } from '@/components/project-board';
 import { RoomTab } from '@/components/project-room';
+import { RoadmapTab } from '@/components/project-roadmap';
 import { ProjectSettingsTab } from '@/components/project-settings';
 import { AgentsTab, CostsTab, DecisionsTab, GitHubTab, LogsTab, OverviewTab, PipelineTab, TasksTab, TestsTab } from '@/components/project-tabs';
 import { hasRole, useSession } from '@/components/providers';
@@ -14,7 +16,7 @@ import { useAction, useApi } from '@/hooks/use-api';
 import { api } from '@/lib/api';
 import type { ProjectDetailResponse } from '@/lib/types';
 
-const TAB_IDS = ['overview', 'room', 'pipeline', 'tasks', 'agents', 'github', 'tests', 'logs', 'decisions', 'costs', 'settings'] as const;
+const TAB_IDS = ['overview', 'room', 'board', 'roadmap', 'pipeline', 'tasks', 'agents', 'github', 'tests', 'logs', 'decisions', 'costs', 'settings'] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 export default function ProjectPage() {
@@ -25,7 +27,7 @@ export default function ProjectPage() {
   const [tab, setTab] = useState<TabId>('overview');
   const detail = useApi<ProjectDetailResponse>(id ? `/api/projects/${encodeURIComponent(id)}` : null, {
     // Room messages refresh the Room tab only, not the whole project detail.
-    live: (event) => event.projectId === id && event.type !== 'scheduler.tick' && event.type !== 'room.message',
+    live: (event) => event.projectId === id && event.type !== 'scheduler.tick' && event.type !== 'room.message' && !event.type.startsWith('lease.') && event.type !== 'milestone.updated',
   });
   const action = useAction();
   useBreadcrumb(detail.data ? [{ label: 'Projects', href: '/projects' }, { label: detail.data.project.name }] : null);
@@ -64,6 +66,8 @@ export default function ProjectPage() {
   const tabs = [
     { id: 'overview', label: 'Overview' },
     { id: 'room', label: 'Room' },
+    { id: 'board', label: 'Board' },
+    { id: 'roadmap', label: 'Roadmap' },
     { id: 'pipeline', label: 'Pipeline', count: data.runs.length },
     { id: 'tasks', label: 'Tasks', count: openTasks },
     { id: 'agents', label: 'Agents' },
@@ -122,6 +126,8 @@ export default function ProjectPage() {
         <TabPanel idPrefix="project" id={tab}>
           {tab === 'overview' ? <OverviewTab detail={data} /> : null}
           {tab === 'room' ? <RoomTab projectId={project.id} /> : null}
+          {tab === 'board' ? <BoardTab projectId={project.id} /> : null}
+          {tab === 'roadmap' ? <RoadmapTab projectId={project.id} /> : null}
           {tab === 'pipeline' ? <PipelineTab detail={data} /> : null}
           {tab === 'tasks' ? <TasksTab detail={data} reload={detail.reload} /> : null}
           {tab === 'agents' ? <AgentsTab projectId={project.id} /> : null}

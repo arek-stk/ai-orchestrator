@@ -9,11 +9,20 @@ orchestration improvements) are merged, because it touches database, server, cor
 |---|---|
 | 1 — Room on the unified conversation model | ✅ merged (PR #22). Built: `conversations` + `conversation_messages` (replaces `room_messages`, see the ADR-030 addendum), `RoomService` (sanitising, redaction, threads, seq cursors), `RoomEventProjector` (allow-listed, deduplicated, per-run capped notices), room API with SSE (`apps/server/src/routes-room.ts`), Room tab with threads and live updates, demo seed. |
 | 1 — remainder | Open: leases (`leases.ts`, scheduler and pipeline checks), board transitions and task columns (assignee, milestone, board position, estimate), `@orchestrator` commands, read markers. |
-| 2–4 | Open. Board and milestones UI, MCP server + AI identities, objections, roadmap. |
+| 2 — board, holds, milestones, roadmap, leases | 🚧 in review. Built: task planning columns (assignee, milestone, board position, estimate, labels, due date) and `scheduling_hold`/`hold_reason` (planning assistant F1), board rules (`packages/core/src/board/board.ts`), milestones with derived progress, leases with glob overlap, scheduler skips (hold, non-orchestrator assignee, foreign task lease), pipeline waits on path leases at IMPLEMENT and COMMIT, lease reaper in the scheduler tick, migration `0004_project_board`, board API (`apps/server/src/routes-board.ts`), room notices and SSE events, Board and Roadmap tabs, demo seed. Decisions: ADR-030 addendum 2. |
+| 1/2 — remainder | Open: `@orchestrator` commands, read markers, orchestrator-held leases (autopilot stage 5), room lease banner. |
+| 3–4 | Open. MCP server + AI identities (external AI assignees), objections into the council, roadmap planning agent (proposal → accept), GitHub sync. |
 
 Room API (stage 1): `GET /api/projects/:id/room`, `GET|POST /api/projects/:id/room/messages` (`before`/`after` seq
 cursors, `limit` ≤ 100), `GET|POST /api/projects/:id/room/messages/:messageId/replies`. SSE event: `room.message`
 (content-free).
+
+Board API (stage 2): `GET /api/projects/:id/board` (columns, tasks, milestones with progress, active leases, assignable
+people), `POST /api/projects/:id/board/cards`, `POST …/board/cards/:taskId/move` (`to`, `index`, `release`),
+`PATCH …/board/cards/:taskId` (assignee, milestone, estimate, labels, due date), `POST …/board/cards/:taskId/hold|release`
+and `POST /api/tasks/:id/hold|release`, `GET|POST /api/projects/:id/milestones`, `PATCH|DELETE …/milestones/:milestoneId`,
+`GET|POST /api/projects/:id/leases`, `POST …/leases/:leaseId/heartbeat|release`. SSE events: `task.moved`, `task.assigned`,
+`task.hold_changed`, `task.planning_updated`, `milestone.updated`, `lease.acquired`, `lease.released`, `lease.expired`.
 
 ## Goals
 

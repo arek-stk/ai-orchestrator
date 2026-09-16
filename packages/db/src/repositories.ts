@@ -1,6 +1,7 @@
 import { and, desc, asc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import {
   ConcurrentModificationError,
+  DEFAULT_TASK_PLANNING,
   emptyCheckpoint,
   type AgentRun,
   type AgentRunFilter,
@@ -21,6 +22,7 @@ import {
   type NewApproval,
   type NewDecision,
   type NewMemory,
+  type NewTaskOptions,
   type NewProject,
   type NewRun,
   type PipelineRun,
@@ -167,7 +169,8 @@ export class DrizzleTaskRepository implements TaskRepository {
     return new Map(rows.map((r) => [r.id, r.status]));
   }
 
-  async create(projectId: string, input: TaskInput, createdBy: string | null): Promise<Task> {
+  async create(projectId: string, input: TaskInput, createdBy: string | null, options: NewTaskOptions = {}): Promise<Task> {
+    const { status = 'READY', ...planning } = options;
     const now = new Date();
     const [row] = await this.db
       .insert(t.tasks)
@@ -178,7 +181,7 @@ export class DrizzleTaskRepository implements TaskRepository {
         title: input.title,
         goal: input.goal,
         kind: input.kind,
-        status: 'READY',
+        status,
         priority: input.priority,
         dependencies: input.dependencies,
         acceptanceCriteria: input.acceptanceCriteria,
@@ -188,6 +191,9 @@ export class DrizzleTaskRepository implements TaskRepository {
         maxCost: input.maxCost,
         maxAttempts: input.maxAttempts,
         readySince: now,
+        ...DEFAULT_TASK_PLANNING,
+        labels: [],
+        ...planning,
         createdBy,
       })
       .returning();

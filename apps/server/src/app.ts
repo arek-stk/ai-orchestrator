@@ -13,6 +13,7 @@ import { registerRoutes } from './routes';
 import { registerHealthRoutes } from './routes-health';
 import { registerRoomRoutes } from './routes-room';
 import { registerAutopilotRoutes } from './routes-autopilot';
+import { registerBoardRoutes } from './routes-board';
 
 export interface AppOptions {
   logger?: boolean;
@@ -65,5 +66,6 @@ export async function buildApp(container: Container, options: AppOptions = {}): 
   await registerHealthRoutes(app, container);
   await registerRoomRoutes(app, container);
   await registerAutopilotRoutes(app, container);
+  await registerBoardRoutes(app, container);
   return app;
 }

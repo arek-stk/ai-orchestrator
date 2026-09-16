@@ -1,3 +1,4 @@
+import { BOARD_COLUMN_LABELS } from '../board/board';
 import type { AnyDomainEvent } from '../events/types';
 import { systemClock, type Clock, type EmitEvent, type EventRecorder, type TaskRepository } from '../ports';
 import { sanitizeInline } from './content';
@@ -49,6 +50,7 @@ function refsOf(event: ProjectableEvent, extra: MessageRefs = {}): MessageRefs {
  */
 export function describeEventForRoom(event: ProjectableEvent, context: { taskTitle: string | null; now: Date }): RoomNotice | null {
   const orchestrator = { authorType: 'orchestrator' as const, authorName: 'Orchestrator' };
+  const system = { authorType: 'system' as const, authorName: 'System' };
   const title = context.taskTitle ? inline(context.taskTitle, 120) : null;
   const run = event.runId ?? '';
   const e = event as AnyDomainEvent;
@@ -109,10 +111,86 @@ export function describeEventForRoom(event: ProjectableEvent, context: { taskTit
       return { ...orchestrator, intent: 'status', body: `Blocked${quoted(title) || ''}: ${inline(e.payload.reason)}`, refs: refsOf(e), dedupeKey: run ? `run:${run}:blocked` : `task:${e.taskId ?? ''}:blocked`, essential: true };
     case 'task.failed':
       return { ...orchestrator, intent: 'status', body: `Failed${quoted(title) || ''}: ${inline(e.payload.reason)}`, refs: refsOf(e), dedupeKey: run ? `run:${run}:failed` : `task:${e.taskId ?? ''}:failed`, essential: true };
+    // Board, milestones and leases (ADR-030 stage 2): system notices. Card changes are bucketed per minute, so dragging a
+    // card back and forth or retrying a request posts once; reorders within a column and field edits are not posted.
+    case 'task.moved': {
+      if (e.payload.from === e.payload.to) return null;
+      const cardTitle = inline(e.payload.title, 120);
+      const hold = e.payload.to === 'ready' || e.payload.to === 'backlog' ? (e.payload.schedulingHold ? ' It is on hold.' : e.payload.schedulable ? ' The orchestrator may start it.' : '') : '';
+      const cancelled = e.payload.cancelledRuns > 0 ? ` ${e.payload.cancelledRuns} run(s) cancelled.` : '';
+      return {
+        ...system,
+        intent: 'status',
+        body: `${inline(e.payload.by, 100)} moved “${cardTitle}” from ${BOARD_COLUMN_LABELS[e.payload.from]} to ${BOARD_COLUMN_LABELS[e.payload.to]}.${hold}${cancelled}`,
+        refs: refsOf(e),
+        dedupeKey: `board:${e.taskId ?? ''}:moved:${e.payload.to}:${minute(context.now)}`,
+        essential: false,
+      };
+    }
+    case 'task.assigned': {
+      const who = e.payload.assigneeType === 'orchestrator' ? 'the orchestrator' : inline(e.payload.assigneeName ?? 'someone', 100);
+      const hold = e.payload.assigneeType === 'orchestrator' && e.payload.schedulingHold ? ' It stays on hold until someone releases it.' : '';
+      return {
+        ...system,
+        intent: 'handoff',
+        body: `${inline(e.payload.by, 100)} assigned “${inline(e.payload.title, 120)}” to ${who}.${hold}`,
+        refs: refsOf(e),
+        dedupeKey: `board:${e.taskId ?? ''}:assigned:${e.payload.assigneeType}:${e.payload.assigneeId ?? ''}:${minute(context.now)}`,
+        essential: false,
+      };
+    }
+    case 'task.hold_changed':
+      return {
+        ...system,
+        intent: 'status',
+        body: e.payload.hold
+          ? `${inline(e.payload.by, 100)} put “${inline(e.payload.title, 120)}” on hold.`
+          : `${inline(e.payload.by, 100)} released “${inline(e.payload.title, 120)}” to the scheduler; the orchestrator may start it.`,
+        refs: refsOf(e),
+        dedupeKey: `board:${e.taskId ?? ''}:hold:${e.payload.hold ? 'on' : 'off'}:${minute(context.now)}`,
+        essential: false,
+      };
+    case 'milestone.updated': {
+      const { change, status, previousStatus } = e.payload;
+      const name = `“${inline(e.payload.title, 120)}”`;
+      const by = inline(e.payload.by, 100);
+      if (change === 'updated' && status === previousStatus) return null;
+      const body =
+        change === 'created' ? `${by} created milestone ${name}.` : change === 'deleted' ? `${by} deleted milestone ${name}; its tasks remain.` : `${by} marked milestone ${name} as ${status}.`;
+      const key = change === 'updated' ? `status:${status}:${minute(context.now)}` : change;
+      return { ...system, intent: 'status', body, refs: {}, dedupeKey: `milestone:${e.payload.milestoneId}:${key}`, essential: false };
+    }
+    case 'lease.acquired': {
+      const target = e.payload.scope === 'task' ? 'this task' : inline(e.payload.paths.slice(0, 5).join(', '), 300);
+      const reason = inline(e.payload.reason, 300);
+      return {
+        ...system,
+        intent: 'claim',
+        body: `${inline(e.payload.holderName, 100)} claimed ${target} until ${e.payload.expiresAt.slice(11, 16)} UTC.${reason ? ` Reason: ${reason}` : ''}`,
+        refs: refsOf(e, e.payload.scope === 'paths' ? { paths: e.payload.paths.slice(0, 20).map((p) => inline(p, 300)) } : {}),
+        dedupeKey: `lease:${e.payload.leaseId}:acquired`,
+        essential: false,
+      };
+    }
+    case 'lease.released':
+      return {
+        ...system,
+        intent: 'release',
+        body: e.payload.broken
+          ? `${inline(e.payload.by, 100)} broke ${inline(e.payload.holderName, 100)}'s ${e.payload.scope} lease.`
+          : `${inline(e.payload.holderName, 100)} released their ${e.payload.scope} lease.`,
+        refs: refsOf(e),
+        dedupeKey: `lease:${e.payload.leaseId}:ended`,
+        essential: false,
+      };
+    case 'lease.expired':
+      return { ...system, intent: 'release', body: `${inline(e.payload.holderName, 100)}'s ${e.payload.scope} lease expired.`, refs: refsOf(e), dedupeKey: `lease:${e.payload.leaseId}:ended`, essential: false };
     default:
       return null;
   }
 }
+
+const minute = (now: Date) => Math.floor(now.getTime() / 60_000);
 
 /** Per-run budget for routine notices. Bounded memory: least recently started runs are evicted first. */
 export class RunNoticeLimiter {

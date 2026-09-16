@@ -5,7 +5,7 @@ import type { CheckReport, PullRequestRef } from '../github/port';
 import { redactSecrets } from '../security/secrets';
 import { ToolDeniedError } from '../tools/tool-router';
 import { branchNameFor, commitPrefix, truncate } from './helpers';
-import { dependencyGate, parseOutput, requestApproval, toolContext, workspaceFor, type StageContext, type StageHandler, type StageOutcome } from './stages';
+import { dependencyGate, leaseGate, parseOutput, requestApproval, toolContext, workspaceFor, type StageContext, type StageHandler, type StageOutcome } from './stages';
 
 const passed = (summary: string): StageOutcome => ({ kind: 'passed', summary });
 
@@ -36,6 +36,9 @@ export const commitStage: StageHandler = async (ctx) => {
   // Last check before anything is published: the change set may have grown after IMPLEMENT (tests, debug fixes).
   const dependencies = await dependencyGate(ctx);
   if (dependencies) return dependencies;
+  // A person may have claimed paths of this change set after IMPLEMENT: never publish over a lease.
+  const leased = await leaseGate(ctx);
+  if (leased) return leased;
 
   const branch = cp.branch ?? branchNameFor(task);
   let head = await deps.github.getBranchSha(repo, branch);

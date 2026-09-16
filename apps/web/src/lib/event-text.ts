@@ -3,6 +3,8 @@ import type { Tone } from './status';
 import type { DomainEvent } from './types';
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : value === null || value === undefined ? '' : String(value));
+const COLUMN_LABELS: Record<string, string> = { backlog: 'Backlog', ready: 'Ready', in_progress: 'In progress', review: 'Review', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled' };
+const columnLabel = (value: unknown): string => COLUMN_LABELS[str(value)] ?? humanize(str(value));
 const num = (value: unknown): number => (typeof value === 'number' ? value : Number(value ?? 0));
 
 /** Human-readable one-line description of a domain event. */
@@ -69,6 +71,22 @@ export function describeEvent(event: DomainEvent): string {
       return `Budget exhausted (${str(p.scope)}): ${str(p.reason)}`;
     case 'room.message':
       return `Room: ${str(p.authorName)} posted ${p.threadId ? 'a reply' : `a ${humanize(str(p.intent)).toLowerCase()}`}`;
+    case 'task.moved':
+      return `${str(p.by)} moved “${str(p.title)}” from ${columnLabel(p.from)} to ${columnLabel(p.to)}${p.schedulingHold ? ' (on hold)' : ''}`;
+    case 'task.assigned':
+      return `${str(p.by)} assigned “${str(p.title)}” to ${p.assigneeType === 'orchestrator' ? 'the orchestrator' : str(p.assigneeName) || 'a person'}`;
+    case 'task.hold_changed':
+      return p.hold ? `${str(p.by)} put “${str(p.title)}” on hold` : `${str(p.by)} released “${str(p.title)}” to the scheduler`;
+    case 'task.planning_updated':
+      return `${str(p.by)} updated planning fields (${((p.fields as string[] | undefined) ?? []).map((f) => humanize(f).toLowerCase()).join(', ')})`;
+    case 'milestone.updated':
+      return `Milestone “${str(p.title)}” ${str(p.change)}${p.change === 'updated' ? ` (${str(p.status)})` : ''} by ${str(p.by)}`;
+    case 'lease.acquired':
+      return `${str(p.holderName)} claimed ${p.scope === 'task' ? 'a task' : ((p.paths as string[] | undefined) ?? []).join(', ')}`;
+    case 'lease.released':
+      return p.broken ? `${str(p.by)} broke ${str(p.holderName)}'s ${str(p.scope)} lease` : `${str(p.holderName)} released a ${str(p.scope)} lease`;
+    case 'lease.expired':
+      return `${str(p.holderName)}'s ${str(p.scope)} lease expired`;
     case 'scheduler.tick':
       return `Scheduler selected ${num(p.selected)} task(s), skipped ${num(p.skipped)}`;
     case 'autopilot.session.started':
@@ -118,6 +136,8 @@ export function eventTone(event: DomainEvent): Tone {
 
 export function eventHref(event: DomainEvent): string | null {
   if (event.type === 'room.message' && event.projectId) return `/projects/${event.projectId}?tab=room`;
+  if ((event.type === 'task.moved' || event.type === 'task.assigned' || event.type === 'task.hold_changed' || event.type.startsWith('lease.')) && event.projectId) return `/projects/${event.projectId}?tab=board`;
+  if (event.type === 'milestone.updated' && event.projectId) return `/projects/${event.projectId}?tab=roadmap`;
   if (event.runId) return `/runs/${event.runId}`;
   if (event.projectId) return `/projects/${event.projectId}`;
   return null;

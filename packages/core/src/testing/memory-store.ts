@@ -10,7 +10,7 @@ import { TERMINAL_RUN_STATUSES, type RunStatus, type TaskStatus } from '../domai
 import type { Project } from '../domain/project';
 import type { AgentRun, Approval, Decision, MemoryItem, UsageEntry } from '../domain/records';
 import { emptyCheckpoint, type PipelineRun } from '../domain/run';
-import type { Task } from '../domain/task';
+import { DEFAULT_TASK_PLANNING, type Task } from '../domain/task';
 import type { AnyDomainEvent } from '../events/types';
 import { ZERO_USAGE } from '../models/types';
 import {
@@ -108,12 +108,16 @@ export function createMemoryStore(clock: Clock = systemClock) {
       }
       return result;
     },
-    create: async (projectId, input, createdBy) => {
+    create: async (projectId, input, createdBy, options = {}) => {
+      const { status = 'READY', ...planning } = clone(options);
       const task = {
         ...clone(input),
+        ...DEFAULT_TASK_PLANNING,
+        labels: [],
+        ...planning,
         id: id('tsk'),
         projectId,
-        status: 'READY' as TaskStatus,
+        status: status as TaskStatus,
         attempts: 0,
         costUsd: 0,
         tokensUsed: 0,

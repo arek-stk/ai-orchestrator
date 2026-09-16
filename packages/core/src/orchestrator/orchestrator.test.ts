@@ -16,6 +16,9 @@ import type { EventRecorder } from '../ports';
 import { RoomEventProjector, withRoomProjection } from '../room/projector';
 import { RoomService } from '../room/service';
 import { createMemoryConversationStore } from '../testing/memory-conversations';
+import { createMemoryBoardStore } from '../testing/memory-board';
+import { BoardService } from '../board/service';
+import { LeaseService } from '../board/lease-service';
 import { Orchestrator, type StepResult } from './orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -175,6 +178,7 @@ async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; 
   let time = Date.parse('2026-09-14T10:00:00Z');
   const clock = { now: () => new Date(time) };
   const store = createMemoryStore(clock);
+  const board = createMemoryBoardStore({ tasks: store.tasks, clock });
   const github = new InMemoryGitHub();
   const mainSha = github.seed(repo, { 'src/index.ts': 'export {};\n', 'README.md': '# Shop\n' });
 
@@ -202,6 +206,7 @@ async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; 
     github,
     sandbox: options.sandbox ?? scriptedSandbox([true]),
     repoIndex: new RepoIndexer(github, store.repoFiles),
+    leases: board.leases,
   });
 
   const project = await store.projects.create({
@@ -234,7 +239,10 @@ async function harness(options: { level?: AutonomyLevel; sandbox?: SandboxPort; 
   }
 
   const eventTypes = () => store.events.log.map((e) => e.type);
-  return { store, github, orchestrator, project, createTask, drive, eventTypes, mainSha };
+  const advance = (ms: number) => {
+    time += ms;
+  };
+  return { store, board, clock, advance, github, orchestrator, project, createTask, drive, eventTypes, mainSha };
 }
 
 // ---------------------------------------------------------------------------
@@ -625,5 +633,151 @@ describe('Project Room projection in the pipeline', () => {
     expect(request).toMatchObject({ authorType: 'orchestrator', refs: { runId: run.id } });
     expect(request!.refs.approvalId).toBeTruthy();
     expect(request!.body).toMatch(/^Approval needed for “Add product index”: database migration/);
+  });
+});
+
+describe('Board, holds and leases with the scheduler (ADR-030 stage 2)', () => {
+  const alice = { id: 'usr_alice', name: 'alice', admin: false };
+  const bob = { id: 'usr_bob', name: 'bob', admin: false };
+
+  async function boardHarness() {
+    const conversations = createMemoryConversationStore();
+    const h = await harness();
+    const events = withRoomProjection(h.store.events, new RoomEventProjector({ room: new RoomService({ ...conversations, events: h.store.events }), tasks: h.store.tasks, clock: h.clock }));
+    const service = new BoardService({
+      projects: h.store.projects,
+      tasks: h.store.tasks,
+      runs: h.store.runs,
+      milestones: h.board.milestones,
+      leases: h.board.leases,
+      events,
+      clock: h.clock,
+      cancelRun: (runId, reason) => h.orchestrator.cancel(runId, reason),
+    });
+    const leases = new LeaseService({ leases: h.board.leases, tasks: h.store.tasks, events, clock: h.clock });
+    const resolveAssignee = async (userId: string) => (userId === bob.id ? { name: 'bob' } : null);
+    const card = (title: string, column: 'backlog' | 'ready' = 'backlog', extra: { release?: boolean } = {}) =>
+      service.createCard({ projectId: h.project.id, task: TaskInputSchema.parse({ title, goal: `${title} for customers` }), column, actor: alice, resolveAssignee, ...extra });
+    return { ...h, conversations, service, leases, resolveAssignee, card };
+  }
+
+  it('never starts a run because a card was added or moved; only an explicit release makes it schedulable', async () => {
+    const h = await boardHarness();
+    const task = await h.card('Add wishlist');
+    expect(task).toMatchObject({ status: 'BACKLOG', schedulingHold: true, assigneeType: 'orchestrator' });
+
+    let tick = await h.orchestrator.tick();
+    expect(tick.started).toEqual([]);
+    expect(tick.skipped).toContainEqual({ taskId: task.id, projectId: h.project.id, reason: 'scheduling_hold' });
+
+    // Backlog -> Ready keeps the hold.
+    const moved = await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'ready', actor: alice });
+    expect(moved).toMatchObject({ from: 'backlog', to: 'ready', mayStartRun: false, schedulableAfter: false, task: { status: 'READY', schedulingHold: true } });
+    expect((await h.orchestrator.tick()).started).toEqual([]);
+
+    // A schedulable task dragged to Backlog is put on hold, so it does not start either.
+    const other = await h.store.tasks.create(h.project.id, TaskInputSchema.parse({ title: 'Existing ready task', goal: 'Was created through the API' }), null);
+    const parked = await h.service.move({ projectId: h.project.id, taskId: other.id, to: 'backlog', actor: alice });
+    expect(parked).toMatchObject({ schedulableBefore: true, schedulableAfter: false, task: { schedulingHold: true, holdReason: 'Moved to Backlog by alice' } });
+    tick = await h.orchestrator.tick();
+    expect(tick.started).toEqual([]);
+    expect(await h.store.runs.list({ projectId: h.project.id })).toEqual([]);
+
+    // Only the explicit release lets the scheduler start the work.
+    const released = await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'ready', index: 0, release: true, actor: alice });
+    expect(released).toMatchObject({ mayStartRun: true, task: { schedulingHold: false, holdReason: null } });
+    tick = await h.orchestrator.tick();
+    expect(tick.started).toHaveLength(1);
+    expect((await h.store.runs.get(tick.started[0]!))!.taskId).toBe(task.id);
+
+    const bodies = h.conversations.messages.all().map((m) => m.body);
+    expect(bodies).toContain('alice moved “Add wishlist” from Backlog to Ready. It is on hold.');
+    expect(bodies).toContain('alice moved “Existing ready task” from Ready to Backlog. It is on hold.');
+    // The release in place within Ready is not a column change, so it posts no second move notice.
+    expect(bodies.filter((b) => b.includes('from Backlog to Ready'))).toHaveLength(1);
+  });
+
+  it('keeps a retried blocked task on hold and deduplicates repeated moves in the room', async () => {
+    const h = await boardHarness();
+    const task = await h.createTask({ title: 'Flaky import' });
+    await h.store.tasks.update(task.id, { status: 'BLOCKED', blockedReason: 'tests keep failing' });
+    const moved = await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'ready', actor: alice });
+    expect(moved.task).toMatchObject({ status: 'READY', blockedReason: null, schedulingHold: true });
+    expect((await h.orchestrator.tick()).started).toEqual([]);
+
+    await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'backlog', actor: alice });
+    await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'ready', actor: alice });
+    const notices = h.conversations.messages.all().filter((m) => m.body.includes('“Flaky import” from') && m.body.includes('to Ready'));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ authorType: 'system', intent: 'status', refs: { taskId: task.id } });
+  });
+
+  it('does not start tasks owned by people, not even through an explicit start', async () => {
+    const h = await boardHarness();
+    const task = await h.createTask({ title: 'Write launch post' });
+    const assigned = await h.service.updateCard({ projectId: h.project.id, taskId: task.id, patch: { assignee: { type: 'user', id: bob.id } }, actor: alice, resolveAssignee: h.resolveAssignee });
+    expect(assigned).toMatchObject({ assigneeType: 'user', assigneeId: bob.id });
+    const tick = await h.orchestrator.tick();
+    expect(tick.started).toEqual([]);
+    expect(tick.skipped).toContainEqual({ taskId: task.id, projectId: h.project.id, reason: 'assigned_to_user' });
+    expect(await h.orchestrator.startTask(task.id)).toBeNull();
+
+    // Only bob (or an admin) moves his task into In progress.
+    await expect(h.service.move({ projectId: h.project.id, taskId: task.id, to: 'in_progress', actor: alice })).rejects.toMatchObject({ code: 'not_assignee' });
+    const started = await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'in_progress', actor: bob });
+    expect(started.task.status).toBe('RUNNING');
+    expect(await h.store.runs.list({ taskId: task.id })).toEqual([]);
+
+    // Handing it back to the orchestrator requires Backlog or Ready and arrives on hold.
+    await expect(
+      h.service.updateCard({ projectId: h.project.id, taskId: task.id, patch: { assignee: { type: 'orchestrator' } }, actor: alice, resolveAssignee: h.resolveAssignee }),
+    ).rejects.toMatchObject({ code: 'pipeline_controlled' });
+    await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'ready', actor: bob });
+    const back = await h.service.updateCard({ projectId: h.project.id, taskId: task.id, patch: { assignee: { type: 'orchestrator' } }, actor: alice, resolveAssignee: h.resolveAssignee });
+    expect(back).toMatchObject({ assigneeType: 'orchestrator', status: 'READY', schedulingHold: true });
+    expect((await h.orchestrator.tick()).started).toEqual([]);
+    expect(h.conversations.messages.all().some((m) => m.intent === 'handoff' && m.body === 'alice assigned “Write launch post” to bob.')).toBe(true);
+  });
+
+  it('skips tasks leased by a person until the lease is released', async () => {
+    const h = await boardHarness();
+    const task = await h.createTask({ title: 'Tune search ranking' });
+    const { lease } = await h.leases.acquire({ projectId: h.project.id, actor: bob, scope: 'task', taskId: task.id, reason: 'pairing on it' });
+    const tick = await h.orchestrator.tick();
+    expect(tick.skipped).toContainEqual({ taskId: task.id, projectId: h.project.id, reason: 'task_leased' });
+    expect(await h.orchestrator.startTask(task.id)).toBeNull();
+    await expect(h.leases.acquire({ projectId: h.project.id, actor: alice, scope: 'task', taskId: task.id })).rejects.toMatchObject({ code: 'lease_conflict' });
+
+    await h.leases.release({ projectId: h.project.id, leaseId: lease.id, actor: bob });
+    expect((await h.orchestrator.tick()).started).toHaveLength(1);
+    const bodies = h.conversations.messages.all().filter((m) => m.intent === 'claim' || m.intent === 'release').map((m) => m.body);
+    expect(bodies).toEqual(['bob claimed this task until 10:30 UTC. Reason: pairing on it', 'bob released their task lease.']);
+  });
+
+  it('waits before publishing over a path lease and continues once it expires', async () => {
+    const h = await boardHarness();
+    const task = await h.createTask();
+    const { lease } = await h.leases.acquire({ projectId: h.project.id, actor: bob, scope: 'paths', pathGlobs: ['src/**'], reason: 'refactoring' });
+    const run = (await h.orchestrator.startTask(task.id))!;
+    expect(await h.drive(run.id)).toEqual({ next: 'done', status: 'SUCCEEDED' });
+    const finished = (await h.store.runs.get(run.id))!;
+    expect(finished.checkpoint.commitSha).toBeTruthy();
+    // The run waited instead of writing over bob's work: IMPLEMENT only passed after the lease had expired.
+    const waited = h.store.events.log.filter((e) => e.type === 'pipeline.stage.completed' && e.runId === run.id && e.payload.stage === 'IMPLEMENT');
+    expect(waited).toHaveLength(1);
+    expect(waited[0]!.createdAt.getTime()).toBeGreaterThanOrEqual(lease.expiresAt.getTime());
+    expect(await h.leases.reap()).toBe(1);
+    expect(await h.leases.reap()).toBe(0);
+    expect(h.conversations.messages.all().at(-1)).toMatchObject({ intent: 'release', body: "bob's paths lease expired." });
+  });
+
+  it('cancels the run when a running orchestrator card is moved to Cancelled', async () => {
+    const h = await boardHarness();
+    const task = await h.createTask();
+    const run = (await h.orchestrator.startTask(task.id))!;
+    await expect(h.service.move({ projectId: h.project.id, taskId: task.id, to: 'ready', actor: alice })).rejects.toMatchObject({ code: 'pipeline_controlled' });
+    const moved = await h.service.move({ projectId: h.project.id, taskId: task.id, to: 'cancelled', actor: alice });
+    expect(moved).toMatchObject({ from: 'in_progress', to: 'cancelled', cancelledRuns: 1, task: { status: 'CANCELLED' } });
+    expect((await h.store.runs.get(run.id))!.status).toBe('CANCELLED');
   });
 });

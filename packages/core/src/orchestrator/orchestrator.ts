@@ -2,6 +2,7 @@ import { AGENT_DEFINITIONS } from '../agents/definitions';
 import type { AgentRuntime } from '../agents/runtime';
 import { approvalGrant } from '../approval/dependencies';
 import type { AutopilotAuditEntry, AutopilotSessionRepository } from '../autopilot/service';
+import { foreignTaskLeases, type LeaseRepository } from '../board/leases';
 import { applyAutopilotSession, DEFAULT_AUTOPILOT_LIMITS, sessionTaskEligibility, type AutopilotLimits, type AutopilotSession } from '../autopilot/session';
 import type { FileSummaryStore } from '../context/file-summarizer';
 import {
@@ -110,6 +111,8 @@ export interface OrchestratorDeps {
   fileSummaries?: FileSummaryStore;
   toolAudit?: (entry: ToolAuditEntry) => void | Promise<void>;
   globalBudgetExhausted?: () => Promise<boolean>;
+  /** Leases (ADR-030): the scheduler skips tasks leased by others; IMPLEMENT and COMMIT wait on overlapping path leases. */
+  leases?: Pick<LeaseRepository, 'listActive'>;
   /** Autopilot sessions (away mode). Absent: the pipeline behaves as without sessions. */
   autopilotSessions?: AutopilotSessionRepository;
   /** Audit trail for autopilot run transitions (started in a session, parked, unparked, paused by a kill). */
@@ -198,10 +201,11 @@ export class Orchestrator {
     }
 
     const dependencyIds = [...new Set(eligible.flatMap((t) => t.dependencies))];
-    const [statuses, slotHolding, running] = await Promise.all([
+    const [statuses, slotHolding, running, taskLeases] = await Promise.all([
       this.deps.tasks.statuses(dependencyIds),
       this.deps.runs.countByProject(SLOT_HOLDING_RUN_STATUSES),
       this.deps.runs.countByProject(['QUEUED', 'RUNNING']),
+      this.deps.leases ? this.deps.leases.listActive({ scope: 'task', limit: 5000 }, now) : Promise.resolve([]),
     ]);
 
     const result = schedule({
@@ -222,6 +226,7 @@ export class Orchestrator {
       globalCapacity: this.options.globalCapacity,
       globalRunning: [...running.values()].reduce((a, b) => a + b, 0),
       globalBudgetExhausted: (await this.deps.globalBudgetExhausted?.()) ?? false,
+      leasedTaskIds: foreignTaskLeases(taskLeases, now),
     });
 
     const skipped = [...sessionSkips, ...result.skipped];
@@ -260,8 +265,11 @@ export class Orchestrator {
   async startTask(taskId: string, options: { sessionId?: string } = {}): Promise<PipelineRun | null> {
     const task = await this.deps.tasks.get(taskId);
     if (!task || (task.status !== 'READY' && task.status !== 'BACKLOG')) return null;
+    // Work owned by a person or an external AI is never started by the orchestrator (ADR-030).
+    if (task.assigneeType !== 'orchestrator') return null;
     const baseProject = await this.deps.projects.get(task.projectId);
     if (!baseProject) return null;
+    if (this.deps.leases && foreignTaskLeases(await this.deps.leases.listActive({ taskId, scope: 'task' }, this.deps.clock.now()), this.deps.clock.now()).has(taskId)) return null;
     const existing = await this.deps.runs.list({ taskId, statuses: NON_TERMINAL_RUN_STATUSES, limit: 1 });
     if (existing.length > 0) return null;
 
@@ -290,7 +298,14 @@ export class Orchestrator {
     run.currentStage = nextPlannedStage(plan, null);
     run = await this.deps.runs.save(run);
 
-    await this.deps.tasks.update(task.id, { status: 'RUNNING', attempts: task.attempts + 1, blockedReason: null });
+    // The scheduler never selects held tasks, so a held task only gets here through an explicit human start, which
+    // is the intent to run it: the hold is cleared.
+    await this.deps.tasks.update(task.id, {
+      status: 'RUNNING',
+      attempts: task.attempts + 1,
+      blockedReason: null,
+      ...(task.schedulingHold ? { schedulingHold: false, holdReason: null } : {}),
+    });
     await this.deps.projects.update(project.id, { lastScheduledAt: now });
     await this.deps.events.emit({ type: 'task.started', projectId: project.id, taskId: task.id, runId: run.id, payload: { runId: run.id } });
     if (session) {

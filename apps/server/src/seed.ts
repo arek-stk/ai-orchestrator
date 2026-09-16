@@ -70,7 +70,7 @@ export async function seedDemoData(container: Container): Promise<boolean> {
     settings: defaultProjectSettings(),
   });
 
-  await container.repos.tasks.create(
+  const search = await container.repos.tasks.create(
     shop.id,
     task({
       title: 'Add product search',
@@ -97,8 +97,44 @@ export async function seedDemoData(container: Container): Promise<boolean> {
     }),
     null,
   );
+  await seedDemoBoard(container, shop.id, search.id);
   await seedDemoRoom(container, shop.id);
   return true;
+}
+
+/**
+ * Milestones and planned cards for the board and roadmap (ADR-030 stage 2). Planned cards start in Backlog on hold, so
+ * the demo scheduler does not pick them up until someone releases them on the board.
+ */
+async function seedDemoBoard(container: Container, projectId: string, searchTaskId: string): Promise<void> {
+  const today = container.clock.now();
+  const day = (offset: number) => new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + offset)).toISOString().slice(0, 10);
+  const { milestones } = container.boardRepos;
+  const mvp = await milestones.create(projectId, { title: 'Search MVP', description: 'Customers find products by name.', status: 'active', startDate: day(-7), dueDate: day(10), position: 1000 }, null);
+  const checkout = await milestones.create(projectId, { title: 'Checkout v2', description: 'Faster checkout with saved carts and wallets.', status: 'planned', startDate: day(8), dueDate: day(35), position: 2000 }, null);
+  const launch = await milestones.create(projectId, { title: 'Public launch', description: 'Marketing site, docs and a launch checklist.', status: 'planned', startDate: day(33), dueDate: day(50), position: 3000 }, null);
+  await container.repos.tasks.update(searchTaskId, { milestoneId: mvp.id, estimatePoints: 5, labels: ['search'] });
+
+  const planned: Array<{ input: TaskInput; milestoneId: string; estimatePoints: 1 | 2 | 3 | 5 | 8 | 13; labels: string[]; dueDate?: string }> = [
+    { input: task({ title: 'Paginate search results', goal: 'Search returns 20 results per page with a next-page cursor.', priority: 6 }), milestoneId: mvp.id, estimatePoints: 3, labels: ['search', 'api'] },
+    { input: task({ title: 'Saved carts', goal: 'Signed-in customers find their cart again on another device.', priority: 5 }), milestoneId: checkout.id, estimatePoints: 8, labels: ['checkout'] },
+    { input: task({ title: 'Wallet payments', goal: 'Customers can pay with a wallet at checkout.', risk: 'high', priority: 5 }), milestoneId: checkout.id, estimatePoints: 5, labels: ['checkout', 'payments'] },
+    { input: task({ title: 'Launch checklist', goal: 'Write the launch checklist for support and operations.', kind: 'docs', risk: 'low', estimatedComplexity: 'simple', priority: 4 }), milestoneId: launch.id, estimatePoints: 2, labels: ['docs'], dueDate: day(45) },
+  ];
+  let position = 1000;
+  for (const card of planned) {
+    await container.repos.tasks.create(projectId, card.input, null, {
+      status: 'BACKLOG',
+      milestoneId: card.milestoneId,
+      estimatePoints: card.estimatePoints,
+      labels: card.labels,
+      dueDate: card.dueDate ?? null,
+      boardPosition: position,
+      schedulingHold: true,
+      holdReason: 'Planned demo card; release it on the board to let the orchestrator start',
+    });
+    position += 1000;
+  }
 }
 
 /** A short conversation so the demo room is not empty; pipeline notices follow as soon as the demo runs start. */
@@ -121,5 +157,5 @@ async function seedDemoRoom(container: Container, projectId: string): Promise<vo
     threadId: question.message.id,
     body: 'Not in the first version. Name search first, SKUs as a follow-up task. Background: https://github.com/demo/shop#readme',
   });
-  await container.room.post({ projectId, author: orchestrator, intent: 'status', body: 'Two tasks are ready: "Add product search" and "Fix README typo". Progress shows up here.' });
+  await container.room.post({ projectId, author: orchestrator, intent: 'status', body: 'Two tasks are ready: "Add product search" and "Fix README typo". Planned work for the next milestones waits on hold in the Backlog column of the board. Progress shows up here.' });
 }
