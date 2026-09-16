@@ -182,8 +182,117 @@ export interface Task {
   prNumber: number | null;
   blockedReason: string | null;
   readySince: ISODate | null;
+  // Planning fields (ADR-030 stage 2).
+  assigneeType: AssigneeType;
+  assigneeId: string | null;
+  milestoneId: string | null;
+  boardPosition: number | null;
+  estimatePoints: EstimatePoints | null;
+  labels: string[];
+  /** YYYY-MM-DD */
+  dueDate: string | null;
+  /** Held tasks are never started by the scheduler; only a person releases them. */
+  schedulingHold: boolean;
+  holdReason: string | null;
   createdAt: ISODate;
   updatedAt: ISODate;
+}
+
+// ---------------------------------------------------------------------------
+// Board, milestones, leases (apps/server/src/routes-board.ts)
+// ---------------------------------------------------------------------------
+
+export const ASSIGNEE_TYPES = ['orchestrator', 'user', 'external_ai'] as const;
+export type AssigneeType = (typeof ASSIGNEE_TYPES)[number];
+export const ESTIMATE_POINTS = [1, 2, 3, 5, 8, 13] as const;
+export type EstimatePoints = (typeof ESTIMATE_POINTS)[number];
+
+export const BOARD_COLUMNS = ['backlog', 'ready', 'in_progress', 'review', 'blocked', 'done', 'cancelled'] as const;
+export type BoardColumn = (typeof BOARD_COLUMNS)[number];
+
+export interface WipState {
+  count: number;
+  limit: number | null;
+  atLimit: boolean;
+  exceeded: boolean;
+}
+
+export interface BoardColumnView {
+  id: BoardColumn;
+  label: string;
+  taskIds: string[];
+  wip: WipState;
+}
+
+export const MILESTONE_STATUSES = ['planned', 'active', 'done'] as const;
+export type MilestoneStatus = (typeof MILESTONE_STATUSES)[number];
+
+export interface MilestoneProgress {
+  total: number;
+  done: number;
+  points: number;
+  pointsDone: number;
+  pct: number;
+  byColumn: Record<BoardColumn, number>;
+  unestimated: number;
+}
+
+export interface Milestone {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: MilestoneStatus;
+  startDate: string | null;
+  dueDate: string | null;
+  position: number;
+  createdAt: ISODate;
+  updatedAt: ISODate;
+  progress: MilestoneProgress;
+}
+
+export interface Lease {
+  id: string;
+  projectId: string;
+  holderType: 'user' | 'external_ai' | 'orchestrator';
+  holderId: string;
+  holderName: string;
+  scope: 'task' | 'paths';
+  taskId: string | null;
+  pathGlobs: string[];
+  reason: string;
+  expiresAt: ISODate;
+  heartbeatAt: ISODate;
+  createdAt: ISODate;
+  endReason: 'released' | 'broken' | 'expired' | null;
+}
+
+export interface BoardAssignee {
+  type: 'user';
+  id: string;
+  login: string;
+  name: string | null;
+  avatarUrl: string | null;
+}
+
+export interface BoardResponse {
+  columns: BoardColumnView[];
+  tasks: Task[];
+  milestones: Milestone[];
+  leases: Lease[];
+  assignees: BoardAssignee[];
+  maxConcurrentTasks: number;
+}
+
+export interface MoveResponse {
+  task: Task;
+  from: BoardColumn;
+  to: BoardColumn;
+  wip: WipState;
+  schedulableBefore: boolean;
+  schedulableAfter: boolean;
+  mayStartRun: boolean;
+  cancelledRuns: number;
 }
 
 export interface CostSummary {
@@ -524,6 +633,9 @@ export const EVENT_TYPES = [
   'budget.exhausted',
   'scheduler.tick',
   'room.message',
+  'task.moved', 'task.assigned', 'task.hold_changed', 'task.planning_updated',
+  'milestone.updated',
+  'lease.acquired', 'lease.released', 'lease.expired',
   'autopilot.session.started', 'autopilot.session.resumed', 'autopilot.session.stopped', 'autopilot.session.killed',
   'autopilot.run.started', 'autopilot.run.parked', 'autopilot.run.unparked',
 ] as const;
