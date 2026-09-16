@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/arek-stk/ai-orchestrator/compare/v0.4.0...v0.5.0) (2026-09-16)
+
+
+### Features
+
+* Project Room stage 2 — Kanban board, holds, milestones, roadmap and leases ([#30](https://github.com/arek-stk/ai-orchestrator/issues/30)) ([2c8faa6](https://github.com/arek-stk/ai-orchestrator/commit/2c8faa6a33a290d2c905b995fac7198afc3786d4))
+
 ## [0.4.0](https://github.com/arek-stk/ai-orchestrator/compare/v0.3.0...v0.4.0) (2026-09-15)
 
 
