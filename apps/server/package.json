@@ -16,7 +16,7 @@
     "@orch/core": "*",
     "@orch/db": "*",
     "@orch/integrations": "*",
-    "fastify": "^5.12.4",
+    "fastify": "^5.12.5",
     "zod": "^4.6.5"
   },
   "devDependencies": {
