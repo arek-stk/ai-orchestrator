@@ -19,10 +19,10 @@
     "build": "npm run build --workspaces --if-present"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.13.5",
     "tsx": "^4.23.13",
     "typescript": "~7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {
