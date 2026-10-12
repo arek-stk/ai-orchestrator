@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.1.2",
-    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/cookie": "^11.1.3",
+    "@fastify/rate-limit": "^11.2.1",
     "@orch/core": "*",
     "@orch/db": "*",
     "@orch/integrations": "*",
