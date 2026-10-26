@@ -11,7 +11,7 @@
     "generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.10",
+    "@electric-sql/pglite": "^0.5.11",
     "@orch/core": "*",
     "drizzle-orm": "^0.45.4",
     "pg": "^8.23.1"
